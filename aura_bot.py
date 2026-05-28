@@ -20,7 +20,7 @@ OWNER_ID = 549639607
 SUPPORT_URL = "https://t.me/Boss023rus"
 
 # Лимиты
-FREE_REQUESTS = 10      # бесплатных запросов на все функции
+FREE_REQUESTS = 15      # бесплатных запросов на все функции
 FREE_PSYCHO = 30        # бесплатных сообщений психологу
 START_PSYCHO = 100      # сообщений психологу на Старте
 START_PHOTO = 5         # фото-анализов на Старте (каждый тип)
@@ -345,10 +345,18 @@ async def check_access(user_id, feature="general"):
     # Фото-анализы — отдельные счётчики на Старте
     photo_map = {"chiromancy": "chiromancy", "physio": "physio", "grapho": "grapho", "taro_photo": "taro_photo"}
     if feature in photo_map:
+        if plan == "aura_pro":
+            return "pro"
         if plan == "aura_start":
             return "ok" if lim[photo_map[feature]] < START_PHOTO else "limit_photo"
-        # Бесплатно — входят в общий лимит
+        # Бесплатно — входят в общий лимит 15 запросов
         return "ok" if lim["requests"] < FREE_REQUESTS else "limit_free"
+
+    # Совместимость по фото — только Про
+    if feature == "compat_photo":
+        if plan == "aura_pro":
+            return "pro"
+        return "start_block"
 
     # Функции только для Про
     if feature in ("matrix", "forecast", "natal"):
@@ -374,16 +382,16 @@ def main_menu():
          InlineKeyboardButton(text="❤️ Совместимость", callback_data="compatibility")],
         [InlineKeyboardButton(text="🧠 AI-Психолог", callback_data="psycho"),
          InlineKeyboardButton(text="📔 Голосовой дневник", callback_data="diary")],
-        [InlineKeyboardButton(text="🖐 Хиромантия", callback_data="chiromancy"),
-         InlineKeyboardButton(text="😊 Физиогномика", callback_data="physio")],
-        [InlineKeyboardButton(text="✍️ Графология", callback_data="grapho")],
         [InlineKeyboardButton(text="🔥 ПРО ФУНКЦИИ 🔥", callback_data="noop")],
         [InlineKeyboardButton(text="🌌 Матрица судьбы", callback_data="matrix"),
          InlineKeyboardButton(text="📅 Прогноз", callback_data="forecast")],
         [InlineKeyboardButton(text="♈ Натальная карта", callback_data="natal"),
          InlineKeyboardButton(text="💰 Денежный код", callback_data="money_code")],
-        [InlineKeyboardButton(text="🃏 Таро по фото", callback_data="taro_photo"),
-         InlineKeyboardButton(text="👫 Совместимость фото", callback_data="compat_photo")],
+        [InlineKeyboardButton(text="🖐 Хиромантия", callback_data="chiromancy"),
+         InlineKeyboardButton(text="😊 Физиогномика", callback_data="physio")],
+        [InlineKeyboardButton(text="✍️ Графология", callback_data="grapho"),
+         InlineKeyboardButton(text="🃏 Таро по фото", callback_data="taro_photo")],
+        [InlineKeyboardButton(text="👫 Совместимость фото", callback_data="compat_photo")],
         [InlineKeyboardButton(text="💎 Тарифы и оплата", callback_data="tariffs")],
         [InlineKeyboardButton(text="⭐️ Оставить отзыв", callback_data="review")],
         [InlineKeyboardButton(text="💬 Поддержка", url=SUPPORT_URL)],
@@ -461,10 +469,11 @@ HOROSCOPE_SYSTEM = """Ты — мудрый астролог с 20-летним 
 Говоришь тепло, вдохновляюще. Пишешь только на русском. Никаких звёздочек и решёток.
 Никогда не начинай с "Конечно", "Отлично", "Вот", "Готово". Обращайся на ты. Каждый ответ — личное послание именно этому человеку."""
 
-DIARY_SYSTEM = """Ты мудрый психолог-коуч. Человек ведёт голосовой дневник.
-Слушаешь, анализируешь, даёшь поддержку и конкретные советы. Помнишь предыдущие записи.
-Пишешь только на русском. Никогда не начинай с Конечно, Отлично, Вот, Готово. Обращайся на ты.
-Структура: что услышал, инсайт, конкретный совет, вопрос для размышления."""
+DIARY_SYSTEM = """Ты — внимательный слушатель и зеркало. Человек ведёт голосовой дневник.
+Ты НЕ даёшь советов и НЕ лечишь. Ты отражаешь: что слышишь, какое настроение чувствуешь, какие темы повторяются.
+Говоришь мягко, бережно, как близкий человек который просто слушает. Пишешь только на русском.
+Никогда не начинай с Конечно, Отлично, Вот, Готово. Обращайся на ты.
+Структура: что услышал в этой записи, какое настроение чувствуется, одно мягкое наблюдение о повторяющейся теме (если есть), один тёплый вопрос для следующей записи."""
 
 MONEY_CODE_SYSTEM = """Ты мудрый нумеролог специализирующийся на денежном коде.
 Анализируешь числовой код человека для привлечения достатка. Говоришь конкретно и вдохновляюще.
@@ -504,26 +513,33 @@ GRAPHO_SYSTEM = """Пользователь прислал фото рукопи
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-WELCOME_TEXT = """🔮 Привет, {name}! Я AuraBot — твой личный эзотерик и психолог.
+WELCOME_TEXT = """🔮 Привет, {name}!
 
-Я уже чувствую твою энергию — и она интересная 👀
+Я AuraBot — эзотерик и психолог в одном. Уже чувствую твою энергию — она интересная 👀
 
 Что умею:
-🔢 Нумерология и Матрица судьбы
+🔢 Нумерология — числа твоей судьбы
 🃏 Таро — расклад на 3 карты
 💤 Толкование снов
-🌈 Чтение ауры
-📅 Нумерологический прогноз
-🧠 AI-психолог с памятью истории
-❤️ Совместимость двух людей
-♈ Натальная карта
+🌈 Чтение ауры по дате рождения
 🌟 Гороскоп на сегодня
-🖐 Хиромантия — по фото ладони
-😊 Физиогномика — по фото лица
-✍️ Графология — по фото почерка
-🎤 Голосовые сообщения
+❤️ Совместимость двух людей
+🧠 AI-Психолог — помнит всю твою историю
+📔 Голосовой дневник с разбором психолога
 
-🎁 10 запросов бесплатно + 30 сообщений психологу
+🔥 На тарифе Про:
+🌌 Матрица судьбы и натальная карта
+📅 Нумерологический прогноз
+💰 Денежный код
+🖐 Фото-анализы — безлимит
+👫 Совместимость по фото двух людей
+🃏 Таро по фото реальных карт
+⭐️ Персональный гороскоп по дате рождения каждое утро
+
+🌙 Каждое утро всем — лунный календарь и советы дня
+🎤 Можно общаться голосовыми — бот всё поймёт!
+
+🎁 Бесплатно: 15 запросов + 20 сообщений психологу
 
 Выбери с чего начнём 👇"""
 
@@ -735,14 +751,19 @@ async def tariffs(callback: CallbackQuery):
     await callback.message.answer(
         f"💎 Тарифы AuraBot\n\n"
         f"🟢 Старт — 190 руб / 1 месяц\n"
-        f"Все базовые функции безлимит\n"
-        f"Психолог — 100 сообщений\n"
-        f"Фото-анализы — по 5 раз\n\n"
+        f"Нумерология, Таро, Сны, Аура, Гороскоп — безлимит\n"
+        f"Совместимость, Голосовой дневник — безлимит\n"
+        f"Хиромантия, Физиогномика, Графология — по 5 раз\n"
+        f"AI-Психолог — 100 сообщений\n\n"
         f"🔥 Про — 390 руб / 1 месяц\n"
-        f"Всё без ограничений\n"
+        f"Всё из Старта без ограничений ПЛЮС:\n"
         f"Матрица судьбы, Прогноз, Натальная карта\n"
-        f"Ежедневный гороскоп по дате рождения утром\n\n"
-        f"🎁 Бесплатно: 10 запросов + 30 сообщений психологу{current}",
+        f"Денежный код, Хиромантия, Физиогномика\n"
+        f"Графология, Таро по фото, Совместимость по фото\n"
+        f"Персональный гороскоп по дате рождения каждое утро\n"
+        f"AI-Психолог — безлимит\n\n"
+        f"🌙 Всем бесплатно: лунный календарь каждое утро\n\n"
+        f"🎁 Бесплатно: 15 запросов на всё (включая фото) + 20 сообщений психологу{current}",
         reply_markup=tariffs_menu()
     )
     await callback.answer()
@@ -812,7 +833,7 @@ async def pay_pro(callback: CallbackQuery):
 async def handle_limit(callback, access):
     if access == "limit_free":
         await callback.message.answer(
-            "🚫 Бесплатные запросы закончились (10 из 10).\n\nОформи подписку чтобы продолжить 👇",
+            "🚫 Бесплатные запросы закончились (15 из 15).\n\nОформи подписку чтобы продолжить 👇",
             reply_markup=upgrade_menu()
         )
     elif access == "limit_psycho_free":
@@ -829,6 +850,11 @@ async def handle_limit(callback, access):
         await callback.message.answer(
             "🚫 Лимит фото-анализов на тарифе Старт исчерпан (5 раз).\n\nПерейди на Про для безлимита 👇",
             reply_markup=upgrade_menu("start")
+        )
+    elif access == "diary_blocked":
+        await callback.message.answer(
+            "📔 Голосовой дневник доступен с тарифа 🟢 Старт.\n\n190 руб/мес — открой доступ 👇",
+            reply_markup=upgrade_menu()
         )
     elif access == "start_block":
         await callback.message.answer(
@@ -1160,23 +1186,20 @@ async def noop_handler(callback: CallbackQuery):
 @dp.callback_query(F.data == "diary")
 async def diary_handler(callback: CallbackQuery):
     user_id = callback.from_user.id
-    plan, sub_end = get_subscription(user_id)
-    if not plan:
-        await callback.message.answer(
-            "Голосовой дневник доступен с тарифа Старт.\n\n190 руб/мес — открой доступ",
-            reply_markup=upgrade_menu()
-        )
+    access = await check_access(user_id, "diary")
+    if access not in ("ok", "pro"):
+        await handle_limit(callback, access)
         await callback.answer()
         return
     set_step(user_id, "diary")
     await callback.message.answer(
         "📔 Голосовой дневник\n\n"
-        "Это твой личный дневник с AI-психологом.\n\n"
+        "Это твоё личное пространство — говори что думаешь и чувствуешь.\n\n"
         "Как пользоваться:\n"
-        "— Запиши голосовое сообщение\n"
-        "— Расскажи как прошёл день, что чувствуешь, что беспокоит\n"
-        "— Я выслушаю, проанализирую и дам конкретный совет\n\n"
-        "Я помню все твои предыдущие записи и вижу динамику.\n\n"
+        "— Нажми на микрофон и запиши голосовое\n"
+        "— Расскажи как прошёл день, что на душе, что заметил\n"
+        "— Я выслушаю и отражу что слышу — без советов, просто как зеркало\n\n"
+        "Для советов и помощи используй 🧠 AI-Психолог\n\n"
         "🎤 Запиши голосовое прямо сейчас:",
         reply_markup=back_menu()
     )
@@ -1185,12 +1208,9 @@ async def diary_handler(callback: CallbackQuery):
 @dp.callback_query(F.data == "money_code")
 async def money_code_handler(callback: CallbackQuery):
     user_id = callback.from_user.id
-    plan, sub_end = get_subscription(user_id)
-    if plan != "aura_pro":
-        await callback.message.answer(
-            "Денежный код доступен только на тарифе Про.\n\n390 руб/мес — всё без ограничений",
-            reply_markup=upgrade_menu("start")
-        )
+    access = await check_access(user_id, "money_code")
+    if access not in ("ok", "pro"):
+        await handle_limit(callback, access)
         await callback.answer()
         return
     set_step(user_id, "money_code")
