@@ -4,6 +4,7 @@ import logging
 import uuid
 from datetime import datetime, timedelta
 from openai import AsyncOpenAI
+import anthropic
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
@@ -89,6 +90,13 @@ logging.basicConfig(level=logging.INFO)
 
 # ========== КЛИЕНТ OPENAI ==========
 client = AsyncOpenAI(api_key=OPENAI_KEY, base_url="https://api.proxyapi.ru/openai/v1")
+
+# ========== КЛИЕНТ CLAUDE ==========
+CLAUDE_MODEL = "claude-sonnet-4-20250514"
+claude_client = anthropic.Anthropic(
+    api_key=OPENAI_KEY,
+    base_url="https://api.proxyapi.ru/anthropic"
+)
 
 # ========== БАЗА ДАННЫХ ==========
 def init_db():
@@ -264,7 +272,7 @@ async def check_access(user_id, feature="general"):
         return "ok" if lim["psycho"] < FREE_PSYCHO else "limit_psycho_free"
 
     # Фото-анализы — отдельные счётчики на Старте
-    photo_map = {"chiromancy": "chiromancy", "physio": "physio", "grapho": "grapho"}
+    photo_map = {"chiromancy": "chiromancy", "physio": "physio", "grapho": "grapho", "taro_photo": "taro_photo"}
     if feature in photo_map:
         if plan == "aura_start":
             return "ok" if lim[photo_map[feature]] < START_PHOTO else "limit_photo"
@@ -300,6 +308,7 @@ def main_menu():
         [InlineKeyboardButton(text="🖐 Хиромантия", callback_data="chiromancy"),
          InlineKeyboardButton(text="😊 Физиогномика", callback_data="physio")],
         [InlineKeyboardButton(text="✍️ Графология", callback_data="grapho")],
+        [InlineKeyboardButton(text="🃏 Таро по фото карт 🔥 Про", callback_data="taro_photo")],
         [InlineKeyboardButton(text="💎 Тарифы и оплата", callback_data="tariffs")],
         [InlineKeyboardButton(text="💬 Поддержка", url=SUPPORT_URL)],
     ])
@@ -375,6 +384,13 @@ NATAL_SYSTEM = """Ты — мудрый астролог-натальщик с 2
 HOROSCOPE_SYSTEM = """Ты — мудрый астролог с 20-летним опытом. Читаешь судьбу через звёзды и планеты.
 Говоришь тепло, вдохновляюще. Пишешь только на русском. Никаких звёздочек и решёток.
 Никогда не начинай с "Конечно", "Отлично", "Вот", "Готово". Обращайся на ты. Каждый ответ — личное послание именно этому человеку."""
+
+TARO_PHOTO_SYSTEM = """Пользователь прислал фото карт Таро которые он вытащил для расклада. 
+Ты — опытный таролог с 20-летним опытом. Смотришь на карты на фото и читаешь расклад.
+Определи какие карты изображены на фото и дай полное толкование расклада.
+Пишешь только на русском. Никаких звёздочек и решёток — только чистый текст с эмодзи.
+Никогда не начинай с "Конечно", "Отлично", "Вот", "Готово". Обращайся на ты.
+Расскажи: какие карты видишь, что каждая означает в позиции расклада, общий совет."""
 
 CHIROMANCY_SYSTEM = """Пользователь прислал фото ладони. Ты — опытный хиромант который умеет читать руку как открытую книгу.
 Смотришь внимательно и рассказываешь что видишь — конкретно, лично, без общих фраз. Пишешь только на русском.
@@ -454,6 +470,36 @@ async def generate_with_photo(system_prompt, image_url):
         max_tokens=1500
     )
     return response.choices[0].message.content
+
+async def generate_with_claude_photo(system_prompt, image_url):
+    """Используем Claude для фото-анализов — он не отказывает от хиромантии и эзотерики"""
+    import httpx
+    async with httpx.AsyncClient() as http_client:
+        response = await http_client.get(image_url)
+        image_data = response.content
+        import base64
+        image_base64 = base64.b64encode(image_data).decode('utf-8')
+
+    response = await asyncio.to_thread(
+        claude_client.messages.create,
+        model=CLAUDE_MODEL,
+        max_tokens=1500,
+        messages=[{
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/jpeg",
+                        "data": image_base64
+                    }
+                },
+                {"type": "text", "text": system_prompt}
+            ]
+        }]
+    )
+    return response.content[0].text
 
 async def transcribe_voice(file_path):
     with open(file_path, "rb") as audio_file:
@@ -962,6 +1008,24 @@ async def handle_limit_msg(message, access):
     elif access == "start_block":
         await message.answer("🔒 Эта функция доступна только на тарифе 🔥 Про 👇", reply_markup=upgrade_menu("start"))
 
+@dp.callback_query(F.data == "taro_photo")
+async def taro_photo(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    plan, sub_end = get_subscription(user_id)
+    if plan != "aura_pro":
+        await callback.message.answer(
+            "Таро по фото карт доступно только на тарифе Про.\n\n390 руб/мес — всё без ограничений",
+            reply_markup=upgrade_menu("start")
+        )
+        await callback.answer()
+        return
+    set_step(user_id, "taro_photo")
+    await callback.message.answer(
+        "Таро по фото карт\n\nВытащи карты и сфотографируй их.\nЯ прочитаю расклад по реальным картам на фото!\n\nПришли фото карт:",
+        reply_markup=back_menu()
+    )
+    await callback.answer()
+
 # ========== ОБРАБОТКА ФОТО ==========
 @dp.message(F.photo)
 async def handle_photo(message: Message):
@@ -973,6 +1037,7 @@ async def handle_photo(message: Message):
         "chiromancy": (CHIROMANCY_SYSTEM, "chiromancy", "photo_chiromancy"),
         "physio": (PHYSIO_SYSTEM, "physio", "photo_physio"),
         "grapho": (GRAPHO_SYSTEM, "grapho", "photo_grapho"),
+        "taro_photo": (TARO_PHOTO_SYSTEM, "taro_photo", "requests"),
     }
 
     if step not in photo_steps:
@@ -997,7 +1062,7 @@ async def handle_photo(message: Message):
     set_step(user_id, "idle")
     await message.answer("⏳ Анализирую фото...")
     try:
-        result = await generate_with_photo(system, file_url)
+        result = await generate_with_claude_photo(system, file_url)
         if access == "ok":
             increment_limit(user_id, "requests")
         else:
