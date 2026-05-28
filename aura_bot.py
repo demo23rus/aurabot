@@ -14,7 +14,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 # ========== КОНФИГ ==========
-BOT_TOKEN = "8757527368:AAFWH8CkEmfiBVhd6wiltSKN9FRiJg_741c"
+BOT_TOKEN = "8887660316:AAHoVJ90RWIE6jz-pFbv8y3WVAI9WEsOXno"
 OPENAI_KEY = "sk-mfvVI3QN2uQvXPlhMkAeUUzmbjK5aQzj"
 OWNER_ID = 549639607
 SUPPORT_URL = "https://t.me/Boss023rus"
@@ -781,7 +781,7 @@ async def create_payment(user_id, plan):
     plan_name = "Старт" if plan == "aura_start" else "Про"
     payment = Payment.create({
         "amount": {"value": amount, "currency": "RUB"},
-        "confirmation": {"type": "redirect", "return_url": "https://t.me/AuraBotTest_Bot"},
+        "confirmation": {"type": "redirect", "return_url": "https://t.me/AuraBot"},
         "capture": True,
         "description": f"AuraBot Тариф {plan_name} — пользователь {user_id}",
         "receipt": {
