@@ -33,7 +33,7 @@ Configuration.account_id = YOOKASSA_SHOP_ID
 Configuration.secret_key = YOOKASSA_SECRET
 
 # ========== GOOGLE SHEETS ==========
-SPREADSHEET_ID = ""  # Заполнить после создания таблицы
+SPREADSHEET_ID = "1PE7CaFuWOe_eygQqIoMAmUdJBtATbIaNfZR4cvarPCA"
 CREDENTIALS_FILE = "/root/google_credentials.json"
 
 def get_sheet():
@@ -41,10 +41,57 @@ def get_sheet():
         scopes = ["https://www.googleapis.com/auth/spreadsheets"]
         creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=scopes)
         client = gspread.authorize(creds)
-        return client.open_by_key(SPREADSHEET_ID).sheet1
+        spreadsheet = client.open_by_key(SPREADSHEET_ID)
+        try:
+            sheet = spreadsheet.worksheet("AuraBot")
+        except Exception:
+            sheet = spreadsheet.add_worksheet(title="AuraBot", rows=1000, cols=10)
+            sheet.insert_row(["ID", "Username", "Имя", "Дата регистрации", "Тариф", "Дата оплаты", "Запросов", "Последняя активность"], 1)
+        return sheet
     except Exception as e:
         logging.error(f"Ошибка подключения к Google Sheets: {e}")
         return None
+
+def sheets_add_review(user_id, username, first_name, review_text):
+    try:
+        if not SPREADSHEET_ID:
+            return
+        scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+        creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=scopes)
+        client = gspread.authorize(creds)
+        spreadsheet = client.open_by_key(SPREADSHEET_ID)
+        # Открываем или создаём лист Отзывы
+        try:
+            sheet = spreadsheet.worksheet("AuraBot Отзывы")
+        except Exception:
+            sheet = spreadsheet.add_worksheet(title="AuraBot Отзывы", rows=1000, cols=5)
+            sheet.insert_row(["ID", "Username", "Имя", "Дата", "Отзыв"], 1)
+        sheet.append_row([
+            str(user_id),
+            f"@{username}" if username else "—",
+            first_name or "—",
+            datetime.now().strftime("%d.%m.%Y %H:%M"),
+            review_text
+        ])
+    except Exception as e:
+        logging.error(f"Ошибка Google Sheets (отзыв): {e}")
+
+def sheets_update_activity(user_id):
+    try:
+        if not SPREADSHEET_ID:
+            return
+        sheet = get_sheet()
+        if not sheet:
+            return
+        col = sheet.col_values(1)
+        if str(user_id) in col:
+            row = col.index(str(user_id)) + 1
+            sheet.update_cell(row, 8, datetime.now().strftime("%d.%m.%Y %H:%M"))
+            # Обновляем счётчик запросов
+            lim = get_limits(user_id)
+            sheet.update_cell(row, 7, str(lim["requests"]))
+    except Exception as e:
+        logging.error(f"Ошибка Google Sheets (активность): {e}")
 
 def sheets_add_user(user_id, username, first_name):
     try:
@@ -55,7 +102,7 @@ def sheets_add_user(user_id, username, first_name):
             return
         col = sheet.col_values(1)
         if not col or col[0] != "ID":
-            sheet.insert_row(["ID", "Username", "Имя", "Дата регистрации", "Тариф", "Дата оплаты"], 1)
+            sheet.insert_row(["ID", "Username", "Имя", "Дата регистрации", "Тариф", "Дата оплаты", "Запросов", "Последняя активность"], 1)
             col = sheet.col_values(1)
         if str(user_id) in col:
             return
@@ -64,7 +111,8 @@ def sheets_add_user(user_id, username, first_name):
             f"@{username}" if username else "—",
             first_name or "—",
             datetime.now().strftime("%d.%m.%Y %H:%M"),
-            "Бесплатный", "—"
+            "Бесплатный", "—", "0",
+            datetime.now().strftime("%d.%m.%Y %H:%M")
         ])
     except Exception as e:
         logging.error(f"Ошибка Google Sheets (новый пользователь): {e}")
@@ -129,6 +177,13 @@ def init_db():
         user_id INTEGER,
         role TEXT,
         content TEXT,
+        created_at TEXT
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS diary (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        entry TEXT,
+        response TEXT,
         created_at TEXT
     )""")
     c.execute("""CREATE TABLE IF NOT EXISTS pending_payments (
@@ -235,6 +290,22 @@ def clear_psycho_history(user_id):
     conn.commit()
     conn.close()
 
+def add_diary_entry(user_id, entry, response):
+    conn = sqlite3.connect("/root/aura.db")
+    conn.execute("INSERT INTO diary (user_id, entry, response, created_at) VALUES (?,?,?,?)",
+                 (user_id, entry, response, datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+
+def get_diary_history(user_id, limit=5):
+    conn = sqlite3.connect("/root/aura.db")
+    c = conn.cursor()
+    c.execute("SELECT entry, response, created_at FROM diary WHERE user_id=? ORDER BY id DESC LIMIT ?",
+              (user_id, limit))
+    rows = c.fetchall()
+    conn.close()
+    return list(reversed(rows))
+
 def save_pending_payment(payment_id, user_id, plan):
     conn = sqlite3.connect("/root/aura.db")
     conn.execute("INSERT INTO pending_payments (payment_id, user_id, plan, created_at) VALUES (?,?,?,?)",
@@ -296,20 +367,25 @@ async def check_access(user_id, feature="general"):
 def main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔢 Нумерология", callback_data="numerology"),
-         InlineKeyboardButton(text="🌌 Матрица судьбы", callback_data="matrix")],
-        [InlineKeyboardButton(text="🃏 Таро", callback_data="taro"),
-         InlineKeyboardButton(text="💤 Толкование снов", callback_data="dreams")],
-        [InlineKeyboardButton(text="🌈 Аура", callback_data="aura"),
-         InlineKeyboardButton(text="📅 Прогноз", callback_data="forecast")],
-        [InlineKeyboardButton(text="🧠 AI-Психолог", callback_data="psycho"),
+         InlineKeyboardButton(text="🃏 Таро", callback_data="taro")],
+        [InlineKeyboardButton(text="💤 Сны", callback_data="dreams"),
+         InlineKeyboardButton(text="🌈 Аура", callback_data="aura")],
+        [InlineKeyboardButton(text="🌟 Гороскоп", callback_data="horoscope"),
          InlineKeyboardButton(text="❤️ Совместимость", callback_data="compatibility")],
-        [InlineKeyboardButton(text="♈ Натальная карта", callback_data="natal"),
-         InlineKeyboardButton(text="🌟 Гороскоп", callback_data="horoscope")],
+        [InlineKeyboardButton(text="🧠 AI-Психолог", callback_data="psycho"),
+         InlineKeyboardButton(text="📔 Голосовой дневник", callback_data="diary")],
         [InlineKeyboardButton(text="🖐 Хиромантия", callback_data="chiromancy"),
          InlineKeyboardButton(text="😊 Физиогномика", callback_data="physio")],
         [InlineKeyboardButton(text="✍️ Графология", callback_data="grapho")],
-        [InlineKeyboardButton(text="🃏 Таро по фото карт 🔥 Про", callback_data="taro_photo")],
+        [InlineKeyboardButton(text="🔥 ПРО ФУНКЦИИ 🔥", callback_data="noop")],
+        [InlineKeyboardButton(text="🌌 Матрица судьбы", callback_data="matrix"),
+         InlineKeyboardButton(text="📅 Прогноз", callback_data="forecast")],
+        [InlineKeyboardButton(text="♈ Натальная карта", callback_data="natal"),
+         InlineKeyboardButton(text="💰 Денежный код", callback_data="money_code")],
+        [InlineKeyboardButton(text="🃏 Таро по фото", callback_data="taro_photo"),
+         InlineKeyboardButton(text="👫 Совместимость фото", callback_data="compat_photo")],
         [InlineKeyboardButton(text="💎 Тарифы и оплата", callback_data="tariffs")],
+        [InlineKeyboardButton(text="⭐️ Оставить отзыв", callback_data="review")],
         [InlineKeyboardButton(text="💬 Поддержка", url=SUPPORT_URL)],
     ])
 
@@ -384,6 +460,23 @@ NATAL_SYSTEM = """Ты — мудрый астролог-натальщик с 2
 HOROSCOPE_SYSTEM = """Ты — мудрый астролог с 20-летним опытом. Читаешь судьбу через звёзды и планеты.
 Говоришь тепло, вдохновляюще. Пишешь только на русском. Никаких звёздочек и решёток.
 Никогда не начинай с "Конечно", "Отлично", "Вот", "Готово". Обращайся на ты. Каждый ответ — личное послание именно этому человеку."""
+
+DIARY_SYSTEM = """Ты мудрый психолог-коуч. Человек ведёт голосовой дневник.
+Слушаешь, анализируешь, даёшь поддержку и конкретные советы. Помнишь предыдущие записи.
+Пишешь только на русском. Никогда не начинай с Конечно, Отлично, Вот, Готово. Обращайся на ты.
+Структура: что услышал, инсайт, конкретный совет, вопрос для размышления."""
+
+MONEY_CODE_SYSTEM = """Ты мудрый нумеролог специализирующийся на денежном коде.
+Анализируешь числовой код человека для привлечения достатка. Говоришь конкретно и вдохновляюще.
+Пишешь только на русском. Никаких звёздочек и решёток. Обращайся на ты."""
+
+COMPAT_PHOTO_SYSTEM = """На фото два человека. Ты опытный физиогномист и психолог.
+Анализируешь совместимость по чертам лица, энергетике и языку тела.
+Пишешь только на русском. Никаких звёздочек и решёток. Обращайся на ты.
+Расскажи: первое впечатление от каждого, совместимость по характеру, сильные стороны пары, зоны роста."""
+
+LUNAR_SYSTEM = """Ты мудрый астролог и знаток лунного календаря. Пишешь ежедневный лунный прогноз.
+Пишешь тепло, конкретно, практично. Только на русском. Никаких звёздочек и решёток."""
 
 TARO_PHOTO_SYSTEM = """Пользователь прислал фото карт Таро которые он вытащил для расклада. 
 Ты — опытный таролог с 20-летним опытом. Смотришь на карты на фото и читаешь расклад.
@@ -558,15 +651,38 @@ async def daily_horoscope_loop():
         pro_users = c.fetchall()
         conn.close()
 
+        # Лунный календарь - всем пользователям
+        try:
+            today = datetime.now().strftime("%d.%m.%Y")
+            lunar_text = await generate_text(
+                LUNAR_SYSTEM,
+                f"Сегодня {today}. Составь лунный прогноз: фаза луны, день лунного цикла, что благоприятно делать, чего избегать, совет дня."
+            )
+            conn2 = sqlite3.connect("/root/aura.db")
+            c2 = conn2.cursor()
+            c2.execute("SELECT user_id FROM users")
+            all_users = c2.fetchall()
+            conn2.close()
+            for (uid,) in all_users:
+                try:
+                    await bot.send_message(uid, f"🌙 Лунный календарь на {today}\n\n{lunar_text}")
+                    await asyncio.sleep(0.05)
+                except Exception:
+                    pass
+        except Exception as e:
+            logging.error(f"Ошибка лунного календаря: {e}")
+
+        # Персональный гороскоп - только Про
         for user_id, birth_date in pro_users:
             try:
+                today = datetime.now().strftime("%d.%m.%Y")
                 text = await generate_text(
                     HOROSCOPE_SYSTEM,
-                    f"Дата рождения: {birth_date}\n\nСоставь персональный гороскоп на сегодня {datetime.now().strftime('%d.%m.%Y')} по дате рождения. Расскажи о энергии дня, главной теме и совете."
+                    f"Дата рождения: {birth_date}\n\nСоставь персональный гороскоп на сегодня {today} по дате рождения. Расскажи о энергии дня, главной теме и совете."
                 )
-                await bot.send_message(user_id, f"🌟 Твой гороскоп на сегодня:\n\n{text}")
+                await bot.send_message(user_id, f"⭐️ Твой персональный гороскоп на {today}\n\n{text}")
             except Exception as e:
-                logging.error(f"Ошибка отправки гороскопа пользователю {user_id}: {e}")
+                logging.error(f"Ошибка отправки гороскопа {user_id}: {e}")
 
 # ========== КОМАНДЫ ==========
 @dp.message(Command("start"))
@@ -945,6 +1061,21 @@ async def handle_text(message: Message):
         await message.answer("Выбери действие из меню 👇", reply_markup=main_menu())
         return
 
+    # Отзыв
+    if step == "review":
+        set_step(user_id, "idle")
+        asyncio.create_task(asyncio.to_thread(
+            sheets_add_review, user_id,
+            message.from_user.username,
+            message.from_user.first_name,
+            text
+        ))
+        await message.answer(
+            "⭐️ Спасибо за отзыв! Мы обязательно его учтём.",
+            reply_markup=main_menu()
+        )
+        return
+
     # Психолог
     if step == "psycho":
         access = await check_access(user_id, "psycho")
@@ -973,6 +1104,7 @@ async def handle_text(message: Message):
         "aura": (AURA_SYSTEM, "Дата рождения: {text}\n\nРасскажи об ауре: цвет ауры, энергетика, сильные стороны, уязвимости, как работать со своей энергией."),
         "forecast": (FORECAST_SYSTEM, "Данные пользователя: {text}\n\nСоставь нумерологический прогноз. Расскажи о текущей энергии, ближайшем периоде, советах для любви, карьеры, финансов и здоровья."),
         "compatibility": (COMPATIBILITY_SYSTEM, "Данные: {text}\n\nПроанализируй совместимость двух людей: общая совместимость, сильные стороны союза, зоны роста, прогноз отношений."),
+        "money_code": (MONEY_CODE_SYSTEM, "Имя и дата рождения: {text}\n\nРассчитай денежный код. Расскажи: личный денежный код (число), что означает, как активировать, три персональные аффирмации."),
         "natal": (NATAL_SYSTEM, "Данные (дата, время, место рождения): {text}\n\nПрочитай натальную карту: солнечный знак и асцендент, лунный знак, сильные планеты, сферы жизни, таланты и вызовы."),
         "horoscope": (HOROSCOPE_SYSTEM, f"Знак зодиака: {{text}}\n\nРасскажи гороскоп на сегодня {datetime.now().strftime('%d.%m.%Y')}: энергия дня, главная тема, совет дня, благоприятные действия."),
     }
@@ -994,6 +1126,7 @@ async def handle_text(message: Message):
         result = await generate_text(system, prompt)
         if access == "ok":
             increment_limit(user_id, "requests")
+        asyncio.create_task(asyncio.to_thread(sheets_update_activity, user_id))
         await message.answer(result, reply_markup=back_menu())
     except Exception as e:
         await message.answer(f"Ошибка: {e}", reply_markup=back_menu())
@@ -1007,6 +1140,83 @@ async def handle_limit_msg(message, access):
         await message.answer("🚫 Лимит психолога на Старте исчерпан.\n\nПерейди на Про 👇", reply_markup=upgrade_menu("start"))
     elif access == "start_block":
         await message.answer("🔒 Эта функция доступна только на тарифе 🔥 Про 👇", reply_markup=upgrade_menu("start"))
+
+@dp.callback_query(F.data == "review")
+async def review_handler(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    set_step(user_id, "review")
+    await callback.message.answer(
+        "⭐️ Оставить отзыв\n\n"
+        "Расскажи как тебе бот — что понравилось, что можно улучшить.\n\n"
+        "Можешь написать текстом или записать голосовое:",
+        reply_markup=back_menu()
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "noop")
+async def noop_handler(callback: CallbackQuery):
+    await callback.answer()
+
+@dp.callback_query(F.data == "diary")
+async def diary_handler(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    plan, sub_end = get_subscription(user_id)
+    if not plan:
+        await callback.message.answer(
+            "Голосовой дневник доступен с тарифа Старт.\n\n190 руб/мес — открой доступ",
+            reply_markup=upgrade_menu()
+        )
+        await callback.answer()
+        return
+    set_step(user_id, "diary")
+    await callback.message.answer(
+        "📔 Голосовой дневник\n\n"
+        "Это твой личный дневник с AI-психологом.\n\n"
+        "Как пользоваться:\n"
+        "— Запиши голосовое сообщение\n"
+        "— Расскажи как прошёл день, что чувствуешь, что беспокоит\n"
+        "— Я выслушаю, проанализирую и дам конкретный совет\n\n"
+        "Я помню все твои предыдущие записи и вижу динамику.\n\n"
+        "🎤 Запиши голосовое прямо сейчас:",
+        reply_markup=back_menu()
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "money_code")
+async def money_code_handler(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    plan, sub_end = get_subscription(user_id)
+    if plan != "aura_pro":
+        await callback.message.answer(
+            "Денежный код доступен только на тарифе Про.\n\n390 руб/мес — всё без ограничений",
+            reply_markup=upgrade_menu("start")
+        )
+        await callback.answer()
+        return
+    set_step(user_id, "money_code")
+    await callback.message.answer(
+        "Денежный код\n\nВведи своё полное имя и дату рождения:\nНапример: Мария Иванова 15.03.1990",
+        reply_markup=back_menu()
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "compat_photo")
+async def compat_photo_handler(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    plan, sub_end = get_subscription(user_id)
+    if plan != "aura_pro":
+        await callback.message.answer(
+            "Совместимость по фото доступна только на тарифе Про.\n\n390 руб/мес — всё без ограничений",
+            reply_markup=upgrade_menu("start")
+        )
+        await callback.answer()
+        return
+    set_step(user_id, "compat_photo")
+    await callback.message.answer(
+        "Совместимость по фото\n\nПришли фото где видны оба человека.\nЯ проанализирую совместимость по чертам лица и энергетике.",
+        reply_markup=back_menu()
+    )
+    await callback.answer()
 
 @dp.callback_query(F.data == "taro_photo")
 async def taro_photo(callback: CallbackQuery):
@@ -1038,6 +1248,7 @@ async def handle_photo(message: Message):
         "physio": (PHYSIO_SYSTEM, "physio", "photo_physio"),
         "grapho": (GRAPHO_SYSTEM, "grapho", "photo_grapho"),
         "taro_photo": (TARO_PHOTO_SYSTEM, "taro_photo", "requests"),
+        "compat_photo": (COMPAT_PHOTO_SYSTEM, "taro_photo", "requests"),
     }
 
     if step not in photo_steps:
@@ -1091,6 +1302,35 @@ async def handle_voice(message: Message):
         await message.answer(f"📝 Распознал: {text}\n\n⏳ Обрабатываю...")
 
         # Создаём фейковое сообщение с текстом и обрабатываем
+        # Отзыв голосом
+        if step == "review":
+            set_step(user_id, "idle")
+            asyncio.create_task(asyncio.to_thread(
+                sheets_add_review, user_id,
+                message.from_user.username,
+                message.from_user.first_name,
+                f"[Голосовой] {text}"
+            ))
+            await message.answer(
+                "⭐️ Спасибо за голосовой отзыв! Мы обязательно его учтём.",
+                reply_markup=main_menu()
+            )
+            return
+
+        # Дневник - особая обработка
+        if step == "diary":
+            await message.answer(f"Запись: {text}\n\nАнализирую...")
+            history = get_diary_history(user_id)
+            history_ctx = ""
+            if history:
+                history_ctx = "\n\nПредыдущие записи:"
+                for entry, resp, date in history[-3:]:
+                    history_ctx += f"\n[{date[:10]}] {entry[:80]}"
+            response = await generate_text(DIARY_SYSTEM, f"Запись в дневник: {text}{history_ctx}")
+            add_diary_entry(user_id, text, response)
+            await message.answer(response, reply_markup=back_menu())
+            return
+
         message.text = text
         await handle_text(message)
     except Exception as e:
