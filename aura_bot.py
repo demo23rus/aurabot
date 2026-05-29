@@ -192,6 +192,11 @@ def init_db():
         plan TEXT,
         created_at TEXT
     )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS referrals (
+        user_id INTEGER PRIMARY KEY,
+        referred_by INTEGER DEFAULT 0,
+        referral_bonus INTEGER DEFAULT 0
+    )""")
     conn.commit()
     conn.close()
 
@@ -327,6 +332,55 @@ def delete_pending_payment(payment_id):
     conn.commit()
     conn.close()
 
+# ========== РЕФЕРАЛЬНАЯ СИСТЕМА ==========
+REFERRAL_BONUS = 3
+
+def get_referral_bonus(user_id):
+    conn = sqlite3.connect("/root/aura.db")
+    c = conn.cursor()
+    c.execute("INSERT OR IGNORE INTO referrals (user_id) VALUES (?)", (user_id,))
+    c.execute("SELECT referral_bonus FROM referrals WHERE user_id=?", (user_id,))
+    row = c.fetchone()
+    conn.commit()
+    conn.close()
+    return row[0] if row else 0
+
+def add_referral_bonus(user_id, amount):
+    conn = sqlite3.connect("/root/aura.db")
+    conn.execute("INSERT OR IGNORE INTO referrals (user_id) VALUES (?)", (user_id,))
+    conn.execute("UPDATE referrals SET referral_bonus=referral_bonus+? WHERE user_id=?", (amount, user_id))
+    # Также увеличиваем лимит запросов
+    conn.execute("INSERT OR IGNORE INTO limits (user_id) VALUES (?)", (user_id,))
+    conn.execute("UPDATE limits SET requests=MAX(0, requests-?) WHERE user_id=?", (amount, user_id))
+    conn.commit()
+    conn.close()
+
+def set_referred_by(user_id, referrer_id):
+    conn = sqlite3.connect("/root/aura.db")
+    conn.execute("INSERT OR IGNORE INTO referrals (user_id) VALUES (?)", (user_id,))
+    c = conn.cursor()
+    c.execute("SELECT referred_by FROM referrals WHERE user_id=?", (user_id,))
+    row = c.fetchone()
+    if row and row[0] == 0:
+        conn.execute("UPDATE referrals SET referred_by=? WHERE user_id=?", (referrer_id, user_id))
+        conn.commit()
+        conn.close()
+        return True
+    conn.close()
+    return False
+
+async def process_referral(new_user_id, referrer_id):
+    if new_user_id == referrer_id:
+        return
+    success = set_referred_by(new_user_id, referrer_id)
+    if success:
+        add_referral_bonus(new_user_id, REFERRAL_BONUS)
+        add_referral_bonus(referrer_id, REFERRAL_BONUS)
+        try:
+            await bot.send_message(referrer_id, f"🎁 Твой друг присоединился по твоей ссылке!\nВы оба получили +{REFERRAL_BONUS} бесплатных запроса!")
+        except Exception:
+            pass
+
 # ========== ПРОВЕРКА ДОСТУПА ==========
 async def check_access(user_id, feature="general"):
     plan, sub_end = get_subscription(user_id)
@@ -393,6 +447,7 @@ def main_menu():
          InlineKeyboardButton(text="🃏 Таро по фото", callback_data="taro_photo")],
         [InlineKeyboardButton(text="👫 Совместимость фото", callback_data="compat_photo")],
         [InlineKeyboardButton(text="💎 Тарифы и оплата", callback_data="tariffs")],
+        [InlineKeyboardButton(text="👥 Пригласить друга (+3 запроса)", callback_data="referral")],
         [InlineKeyboardButton(text="⭐️ Оставить отзыв", callback_data="review")],
         [InlineKeyboardButton(text="💬 Поддержка", url=SUPPORT_URL)],
     ])
@@ -638,6 +693,11 @@ async def check_payments_loop():
                     payment = Payment.find_one(payment_id)
                     if payment.status == "succeeded":
                         set_subscription(user_id, plan, 30)
+                        # Сбрасываем лимиты при оплате
+                        conn_reset = sqlite3.connect("/root/aura.db")
+                        conn_reset.execute("UPDATE limits SET requests=0, psycho_messages=0, photo_chiromancy=0, photo_physio=0, photo_grapho=0 WHERE user_id=?", (user_id,))
+                        conn_reset.commit()
+                        conn_reset.close()
                         delete_pending_payment(payment_id)
                         asyncio.create_task(asyncio.to_thread(sheets_update_subscription, user_id, plan))
                         plan_name = "🟢 Старт" if plan == "aura_start" else "🔥 Про"
@@ -646,6 +706,12 @@ async def check_payments_loop():
                             f"✅ Оплата прошла успешно!\n\nТариф {plan_name} активирован на 30 дней.\n\nПользуйся на здоровье! 🔮",
                             reply_markup=main_menu()
                         )
+                        # Уведомляем владельца
+                        try:
+                            amount = "190₽" if plan == "aura_start" else "390₽"
+                            await bot.send_message(OWNER_ID, f"💰 Новая оплата AuraBot!\n👤 ID: {user_id}\n📦 Тариф: {plan_name}\n💵 Сумма: {amount}")
+                        except Exception:
+                            pass
                     elif payment.status == "canceled":
                         delete_pending_payment(payment_id)
                         await bot.send_message(user_id, "❌ Платёж отменён. Попробуй снова.", reply_markup=main_menu())
@@ -653,6 +719,67 @@ async def check_payments_loop():
                     logging.error(f"Ошибка проверки платежа {payment_id}: {e}")
         except Exception as e:
             logging.error(f"Ошибка в check_payments_loop: {e}")
+
+@dp.callback_query(F.data == "referral")
+async def referral_handler(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    bonus = get_referral_bonus(user_id)
+    link = f"https://t.me/AuraBot?start=ref{user_id}"
+    await callback.message.answer(
+        f"👥 Твоя реферальная ссылка:\n{link}\n\n"
+        f"Поделись с друзьями — когда они запустят бота, вы оба получите +{REFERRAL_BONUS} бесплатных запроса!\n\n"
+        f"🎁 Всего приглашено бонусов: {bonus}",
+        reply_markup=back_menu()
+    )
+    await callback.answer()
+
+# ========== ВАЛИДАЦИЯ ФОТО ==========
+PHOTO_VALIDATE = {
+    "chiromancy": "На этом изображении видна человеческая ладонь достаточно чётко для хиромантии? Ответь только YES или NO",
+    "physio": "На этом изображении видно человеческое лицо достаточно чётко? Ответь только YES или NO",
+    "grapho": "На этом изображении виден рукописный текст достаточно чётко? Ответь только YES или NO",
+    "taro_photo": "На этом изображении видны карты Таро или игральные карты? Ответь только YES или NO",
+    "compat_photo": "На этом изображении видны два или более людей? Ответь только YES или NO",
+}
+
+PHOTO_WRONG = {
+    "chiromancy": "🖐 На фото не видно ладони. Отправь чёткое фото своей ладони — ладонью вверх, хорошее освещение.",
+    "physio": "😊 На фото не видно лица. Отправь чёткое фото своего лица — анфас, хорошее освещение, без фильтров.",
+    "grapho": "✍️ На фото не видно рукописного текста. Напиши 5-7 предложений от руки на белой бумаге и сфотографируй.",
+    "taro_photo": "🃏 На фото не видно карт Таро. Сфотографируй карты которые ты вытащил для расклада.",
+    "compat_photo": "👫 На фото не видно двух людей. Отправь фото где видны оба человека.",
+}
+
+async def validate_photo(step, image_url):
+    if step not in PHOTO_VALIDATE:
+        return True
+    try:
+        result = await generate_with_claude_photo(PHOTO_VALIDATE[step], image_url)
+        return "YES" in result.upper()
+    except Exception:
+        return True
+
+# ========== ПРОВЕРКА ПОДПИСОК ==========
+async def check_subscription_expiry():
+    conn = sqlite3.connect("/root/aura.db")
+    c = conn.cursor()
+    c.execute("SELECT user_id, plan, sub_end FROM subscriptions")
+    rows = c.fetchall()
+    conn.close()
+    now = datetime.now()
+    for user_id, plan, sub_end_str in rows:
+        try:
+            sub_end = datetime.fromisoformat(sub_end_str)
+            days_left = (sub_end - now).days
+            plan_name = "🟢 Старт" if plan == "aura_start" else "🔥 Про"
+            if days_left == 3:
+                await bot.send_message(user_id, f"⚠️ Твоя подписка {plan_name} истекает через 3 дня!\n\nПродли чтобы не потерять доступ 👇", reply_markup=tariffs_menu())
+            elif days_left == 1:
+                await bot.send_message(user_id, f"⚠️ Твоя подписка {plan_name} истекает завтра!\n\nПродли прямо сейчас 👇", reply_markup=tariffs_menu())
+            elif days_left <= 0:
+                await bot.send_message(user_id, f"❌ Твоя подписка {plan_name} закончилась.\n\nОбнови чтобы продолжить пользоваться всеми функциями 👇", reply_markup=tariffs_menu())
+        except Exception as e:
+            logging.error(f"sub_expiry error {user_id}: {e}")
 
 # ========== ЕЖЕДНЕВНЫЙ ГОРОСКОП ==========
 async def daily_horoscope_loop():
@@ -675,9 +802,16 @@ async def daily_horoscope_loop():
         pro_users = c.fetchall()
         conn.close()
 
-        # Лунный календарь - всем пользователям
+        # Утреннее духовное приветствие + лунный календарь - всем пользователям
         try:
             today = datetime.now().strftime("%d.%m.%Y")
+            # Духовное напутствие
+            morning_text = await generate_text(
+                """Ты мудрый духовный наставник. Пишешь короткое утреннее напутствие.
+                Включи: 1) мудрость или поговорку предков, 2) энергию этого дня, 3) тёплое пожелание.
+                Стиль: тёплый, душевный, как от мудрой бабушки. 3-4 предложения. Только на русском. Без заголовков.""",
+                f"Сегодня {today}. Напиши утреннее духовное напутствие."
+            )
             lunar_text = await generate_text(
                 LUNAR_SYSTEM,
                 f"Сегодня {today}. Составь лунный прогноз: фаза луны, день лунного цикла, что благоприятно делать, чего избегать, совет дня."
@@ -689,12 +823,17 @@ async def daily_horoscope_loop():
             conn2.close()
             for (uid,) in all_users:
                 try:
+                    await bot.send_message(uid, f"🌅✨ {morning_text}")
+                    await asyncio.sleep(0.05)
                     await bot.send_message(uid, f"🌙 Лунный календарь на {today}\n\n{lunar_text}")
                     await asyncio.sleep(0.05)
                 except Exception:
                     pass
         except Exception as e:
-            logging.error(f"Ошибка лунного календаря: {e}")
+            logging.error(f"Ошибка утренней рассылки: {e}")
+
+        # Проверяем истекающие подписки
+        await check_subscription_expiry()
 
         # Персональный гороскоп - только Про
         for user_id, birth_date in pro_users:
@@ -716,6 +855,14 @@ async def cmd_start(message: Message):
     set_step(user_id, "idle")
     name = message.from_user.first_name or "друг"
     asyncio.create_task(asyncio.to_thread(sheets_add_user, user_id, message.from_user.username, message.from_user.first_name))
+    # Обработка реферальной ссылки
+    args = message.text.split()
+    if len(args) > 1 and args[1].startswith("ref"):
+        try:
+            referrer_id = int(args[1][3:])
+            asyncio.create_task(process_referral(user_id, referrer_id))
+        except Exception:
+            pass
     await message.answer(WELCOME_TEXT.format(name=name), reply_markup=main_menu())
 
 @dp.message(Command("reset"))
@@ -1302,12 +1449,21 @@ async def handle_photo(message: Message):
 
     set_step(user_id, "idle")
     await message.answer("⏳ Анализирую фото...")
+
+    # Валидация — проверяем что на фото то что нужно
+    is_valid = await validate_photo(step, file_url)
+    if not is_valid:
+        wrong_msg = PHOTO_WRONG.get(step, "")
+        if wrong_msg:
+            set_step(user_id, step)  # Оставляем шаг для повторной отправки
+            await message.answer(wrong_msg, reply_markup=back_menu())
+            return
+
     try:
         result = await generate_with_claude_photo(system, file_url)
         if access == "ok":
-            increment_limit(user_id, "requests")
-        else:
             increment_limit(user_id, limit_field)
+        # Pro — не считаем лимиты
         await message.answer(result, reply_markup=back_menu())
     except Exception as e:
         await message.answer(f"Ошибка анализа: {e}", reply_markup=back_menu())
