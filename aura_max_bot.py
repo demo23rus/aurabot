@@ -366,10 +366,10 @@ async def create_payment(user_id, plan):
             "https://api.yookassa.ru/v3/payments",
             json={
                 "amount": {"value": amount, "currency": "RUB"},
-                "confirmation": {"type": "redirect", "return_url": "https://max.ru"},
+                "confirmation": {"type": "redirect", "return_url": "https://aurahelper.ru/payment/success"},
                 "capture": True,
                 "description": f"AuraBot MAX Тариф {plan_name} — {user_id}",
-                "receipt": {"customer": {"email": "client@aurabot.ru"}, "items": [{
+                "receipt": {"customer": {"email": "6038484@mail.ru"}, "items": [{
                     "description": f"AuraBot Тариф {plan_name} 30 дней",
                     "quantity": "1.00",
                     "amount": {"value": amount, "currency": "RUB"},
@@ -773,7 +773,24 @@ async def process_photo(chat_id, user_id, photo_token):
         await send_message(chat_id, f"Ошибка анализа фото. Попробуй ещё раз.", back_button())
 
 # ========== FASTAPI WEBHOOK ==========
+WEBHOOK_URL = "https://aurahelper.ru/webhook"
+
 app = FastAPI()
+
+@app.on_event("startup")
+async def startup():
+    init_db()
+    headers = {"Authorization": f"Bearer {MAX_TOKEN}", "Content-Type": "application/json"}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(f"{MAX_API}/subscriptions",
+                json={"url": WEBHOOK_URL}, headers=headers)
+            logging.info(f"Webhook регистрация: {r.json()}")
+    except Exception as e:
+        logging.error(f"Ошибка регистрации webhook: {e}")
+    asyncio.create_task(check_payments_loop())
+    asyncio.create_task(daily_loop())
+    logging.info("Aura MAX Bot запущен!")
 
 @app.post("/webhook")
 async def webhook(request: Request):
@@ -818,16 +835,50 @@ async def webhook(request: Request):
 
         elif update_type == "message_callback":
             user = callback.get("user", {})
-            chat_id = callback.get("message", {}).get("recipient", {}).get("chat_id")
+            recipient = message.get("recipient", {})
+            chat_id = (
+                recipient.get("chat_id") or
+                callback.get("chat_id") or
+                message.get("sender", {}).get("chat_id")
+            )
             user_id = user.get("user_id")
             first_name = user.get("name", "друг")
             payload = callback.get("payload", "")
-            await process_callback(chat_id, user_id, payload, first_name)
+            logging.info(f"CALLBACK: chat_id={chat_id} user_id={user_id} payload={payload}")
+            if chat_id and payload:
+                await process_callback(chat_id, user_id, payload, first_name)
+            else:
+                logging.error(f"Нет chat_id в callback: {data}")
 
     except Exception as e:
         logging.error(f"Webhook error: {e}")
 
     return JSONResponse({"ok": True})
+
+@app.get("/payment/success")
+async def payment_success():
+    html = """<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Оплата прошла — AuraBot</title>
+<style>
+  body { font-family: Arial, sans-serif; text-align: center; padding: 60px 20px; background: #1a0533; color: #e8d5ff; }
+  .icon { font-size: 64px; margin-bottom: 20px; }
+  h1 { font-size: 28px; margin-bottom: 12px; color: #c084fc; }
+  p { font-size: 16px; color: #d8b4fe; line-height: 1.6; }
+</style>
+</head>
+<body>
+  <div class="icon">🔮</div>
+  <h1>Оплата прошла!</h1>
+  <p>Твоя подписка активирована.<br>Возвращайся в бот и пользуйся!</p>
+  <p>Бот → <strong>AuraBot</strong></p>
+</body>
+</html>"""
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(content=html)
 
 @app.get("/health")
 async def health():
@@ -835,10 +886,7 @@ async def health():
 
 # ========== MAIN ==========
 async def main():
-    init_db()
-    asyncio.create_task(check_payments_loop())
-    asyncio.create_task(daily_loop())
-    config = uvicorn.Config(app, host="0.0.0.0", port=8080, log_level="info")
+    config = uvicorn.Config(app, host="0.0.0.0", port=8081, log_level="info")
     server = uvicorn.Server(config)
     await server.serve()
 
