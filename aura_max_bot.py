@@ -37,19 +37,26 @@ claude_client = anthropic.Anthropic(api_key=OPENAI_KEY, base_url="https://api.pr
 
 # ========== MAX API ==========
 async def send_message(chat_id, text, buttons=None):
-    headers = {"Authorization": f"Bearer {MAX_TOKEN}", "Content-Type": "application/json"}
-    payload = {"text": text}
+    headers = {"Authorization": MAX_TOKEN, "Content-Type": "application/json"}
+    payload = {"text": text[:4000]}
     if buttons:
         payload["attachments"] = [{"type": "inline_keyboard", "payload": {"buttons": buttons}}]
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(f"{MAX_API}/messages?chat_id={chat_id}", json=payload, headers=headers)
+        logging.info(f"send_message chat_id={chat_id}: {r.status_code}")
         return r.json()
 
-async def get_photo(token):
-    headers = {"Authorization": f"Bearer {MAX_TOKEN}"}
-    async with httpx.AsyncClient() as client:
-        r = await client.get(f"{MAX_API}/photos/{token}", headers=headers)
-        return r.content
+async def get_photo(photo_url):
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.get(photo_url)
+            if r.status_code == 200 and len(r.content) > 100:
+                return r.content
+            logging.error(f"Ошибка скачивания фото: {r.status_code}")
+            return None
+    except Exception as e:
+        logging.error(f"Ошибка get_photo: {e}")
+        return None
 
 # ========== КНОПКИ ==========
 def main_menu_buttons():
@@ -738,7 +745,7 @@ async def process_callback(chat_id, user_id, payload, first_name=""):
 
     await send_message(chat_id, "Выбери действие из меню 👇", main_menu_buttons())
 
-async def process_photo(chat_id, user_id, photo_token):
+async def process_photo(chat_id, user_id, photo_url):
     user = get_user(user_id)
     step = user.get("step", "")
 
@@ -762,7 +769,10 @@ async def process_photo(chat_id, user_id, photo_token):
 
     await send_message(chat_id, "⏳ Анализирую фото...")
     try:
-        image_bytes = await get_photo(photo_token)
+        image_bytes = await get_photo(photo_url)
+        if not image_bytes:
+            await send_message(chat_id, "❌ Не удалось загрузить фото. Попробуй ещё раз.", back_button())
+            return
         result = await generate_with_claude_photo(system, image_bytes)
         set_step(user_id, "idle")
         if access == "ok":
@@ -770,7 +780,7 @@ async def process_photo(chat_id, user_id, photo_token):
         await send_message(chat_id, result, back_button())
     except Exception as e:
         logging.error(f"Ошибка фото-анализа: {e}")
-        await send_message(chat_id, f"Ошибка анализа фото. Попробуй ещё раз.", back_button())
+        await send_message(chat_id, "Ошибка анализа фото. Попробуй ещё раз.", back_button())
 
 # ========== FASTAPI WEBHOOK ==========
 WEBHOOK_URL = "https://aurahelper.ru/webhook"
@@ -780,7 +790,7 @@ app = FastAPI()
 @app.on_event("startup")
 async def startup():
     init_db()
-    headers = {"Authorization": f"Bearer {MAX_TOKEN}", "Content-Type": "application/json"}
+    headers = {"Authorization": MAX_TOKEN, "Content-Type": "application/json"}
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.post(f"{MAX_API}/subscriptions",
@@ -825,10 +835,18 @@ async def webhook(request: Request):
             if attachments:
                 for att in attachments:
                     if att.get("type") == "image":
-                        token = att.get("payload", {}).get("token")
-                        if token:
-                            await process_photo(chat_id, user_id, token)
+                        payload_data = att.get("payload", {})
+                        photo_url = (
+                            payload_data.get("url") or
+                            payload_data.get("photo_url") or
+                            (payload_data.get("photos", [{}])[0].get("url") if payload_data.get("photos") else None)
+                        )
+                        logging.info(f"Фото payload: {payload_data}")
+                        if photo_url:
+                            await process_photo(chat_id, user_id, photo_url)
                             return JSONResponse({"ok": True})
+                        else:
+                            logging.error(f"Не найден URL фото: {payload_data}")
 
             if text:
                 await process_command(chat_id, user_id, text, username, first_name)
