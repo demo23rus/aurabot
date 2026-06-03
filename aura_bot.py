@@ -1533,11 +1533,84 @@ async def handle_voice(message: Message):
     except Exception as e:
         await message.answer(f"Ошибка распознавания голоса: {e}", reply_markup=back_menu())
 
+# ========== КАНАЛ ==========
+CHANNEL_ID = "@aurabot_mystic"
+
+CHANNEL_SYSTEM_MORNING = """Ты — мудрый эзотерик и духовный наставник канала AuraBot.
+Пишешь вдохновляющий утренний пост для людей интересующихся эзотерикой, астрологией и саморазвитием.
+Пост должен: начинаться с красивого эмодзи, содержать мудрость или цитату, давать энергию на день.
+Стиль: тёплый, вдохновляющий, глубокий. 4-5 предложений. Только на русском. Без хэштегов."""
+
+CHANNEL_SYSTEM_PSYCHO = """Ты — опытный психолог и коуч канала AuraBot.
+Пишешь развёрнутый дневной совет для людей которые хотят лучше понять себя и свои отношения.
+Совет должен: быть практичным и жизненным, касаться реальных ситуаций (отношения, самооценка, тревога, общение),
+содержать конкретные действия или упражнения которые можно применить сегодня.
+Стиль: профессиональный но тёплый, как совет от умного друга-психолога. 6-8 предложений. Без хэштегов."""
+
+CHANNEL_SYSTEM_EVENING = """Ты — мудрый астролог и эзотерик канала AuraBot.
+Пишешь вечерний пост — время подведения итогов и настройки на ночь.
+Пост должен: помочь отпустить день, настроить на спокойный сон, дать практику или аффирмацию на вечер.
+Стиль: мягкий, успокаивающий, тёплый. 4-5 предложений. Без хэштегов."""
+
+async def channel_posting_loop():
+    while True:
+        now = datetime.now()
+        today = now.strftime("%d.%m.%Y")
+
+        # Утренний пост в 9:00
+        next_morning = now.replace(hour=9, minute=0, second=0, microsecond=0)
+        if now >= next_morning:
+            next_morning += timedelta(days=1)
+
+        # Дневной совет психолога в 13:00
+        next_noon = now.replace(hour=13, minute=0, second=0, microsecond=0)
+        if now >= next_noon:
+            next_noon += timedelta(days=1)
+
+        # Вечерний пост в 20:00
+        next_evening = now.replace(hour=20, minute=0, second=0, microsecond=0)
+        if now >= next_evening:
+            next_evening += timedelta(days=1)
+
+        # Ждём ближайшее событие
+        next_event = min(next_morning, next_noon, next_evening)
+        wait_seconds = (next_event - now).total_seconds()
+        await asyncio.sleep(wait_seconds)
+
+        now = datetime.now()
+        today = now.strftime("%d.%m.%Y")
+
+        try:
+            if now.hour == 9:
+                text = await generate_text(
+                    CHANNEL_SYSTEM_MORNING,
+                    f"Сегодня {today}. Напиши утренний вдохновляющий пост для канала."
+                )
+                await bot.send_message(CHANNEL_ID, f"🌅 Доброе утро!\n\n{text}")
+
+            elif now.hour == 13:
+                text = await generate_text(
+                    CHANNEL_SYSTEM_PSYCHO,
+                    f"Сегодня {today}. Напиши развёрнутый совет психолога на актуальную тему — выбери одну из: отношения с близкими, работа со страхами, повышение самооценки, границы в общении, выход из стресса, принятие себя."
+                )
+                await bot.send_message(CHANNEL_ID, f"🧠 Совет психолога\n\n{text}")
+
+            elif now.hour == 20:
+                text = await generate_text(
+                    CHANNEL_SYSTEM_EVENING,
+                    f"Сегодня {today}. Напиши вечерний пост — помоги людям завершить день и настроиться на отдых."
+                )
+                await bot.send_message(CHANNEL_ID, f"🌙 Вечернее\n\n{text}")
+
+        except Exception as e:
+            logging.error(f"Ошибка рассылки в канал: {e}")
+
 # ========== MAIN ==========
 async def main():
     init_db()
     asyncio.create_task(check_payments_loop())
     asyncio.create_task(daily_horoscope_loop())
+    asyncio.create_task(channel_posting_loop())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
