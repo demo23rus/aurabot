@@ -33,7 +33,7 @@ logging.basicConfig(level=logging.INFO)
 
 # ========== КЛИЕНТЫ AI ==========
 openai_client = AsyncOpenAI(api_key=OPENAI_KEY, base_url="https://api.proxyapi.ru/openai/v1")
-claude_client = anthropic.Anthropic(api_key=OPENAI_KEY, base_url="https://api.proxyapi.ru/anthropic")
+claude_client = anthropic.Anthropic(api_key=CLAUDE_KEY, base_url="https://api.proxyapi.ru/anthropic")
 
 # ========== MAX API ==========
 async def send_message(chat_id, text, buttons=None):
