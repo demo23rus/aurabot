@@ -33,7 +33,7 @@ logging.basicConfig(level=logging.INFO)
 
 # ========== КЛИЕНТЫ AI ==========
 openai_client = AsyncOpenAI(api_key=OPENAI_KEY, base_url="https://api.proxyapi.ru/openai/v1")
-claude_client = anthropic.Anthropic(api_key=CLAUDE_KEY, base_url="https://api.proxyapi.ru/anthropic")
+claude_client = anthropic.Anthropic(api_key=CLAUDE_KEY)
 
 # ========== MAX API ==========
 async def send_message(chat_id, text, buttons=None):
@@ -355,7 +355,7 @@ async def generate_with_claude_photo(system_prompt, image_bytes):
     image_base64 = base64.b64encode(image_bytes).decode('utf-8')
     response = await asyncio.to_thread(
         claude_client.messages.create,
-        model="claude-sonnet-4-20250514",
+        model="claude-opus-4-6",
         max_tokens=1500,
         messages=[{"role": "user", "content": [
             {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_base64}},
