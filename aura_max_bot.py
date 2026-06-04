@@ -808,6 +808,8 @@ async def startup():
     except Exception as e:
         logging.error(f"Ошибка регистрации webhook: {e}")
     asyncio.create_task(check_payments_loop())
+    asyncio.create_task(channel_posting_loop())
+    logging.info("Aura MAX Bot запущен!")
     asyncio.create_task(daily_loop())
     logging.info("Aura MAX Bot запущен!")
 
@@ -910,6 +912,83 @@ async def payment_success():
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+# ========== КАНАЛ MAX ==========
+MAX_CHANNEL_ID = -75554451158515
+
+CHANNEL_SYSTEM_MORNING = """Ты — мудрый эзотерик и духовный наставник канала AuraBot.
+Пишешь вдохновляющий утренний пост для людей интересующихся эзотерикой, астрологией и саморазвитием.
+Пост должен: начинаться с красивого эмодзи, содержать мудрость или цитату, давать энергию на день.
+Стиль: тёплый, вдохновляющий, глубокий. 4-5 предложений. Только на русском. Без хэштегов."""
+
+CHANNEL_SYSTEM_PSYCHO = """Ты — опытный психолог и коуч канала AuraBot.
+Пишешь развёрнутый дневной совет для людей которые хотят лучше понять себя и свои отношения.
+Совет должен: быть практичным и жизненным, касаться реальных ситуаций (отношения, самооценка, тревога, общение),
+содержать конкретные действия или упражнения которые можно применить сегодня.
+Стиль: профессиональный но тёплый, как совет от умного друга-психолога. 6-8 предложений. Без хэштегов."""
+
+CHANNEL_SYSTEM_EVENING = """Ты — мудрый астролог и эзотерик канала AuraBot.
+Пишешь вечерний пост — время подведения итогов и настройки на ночь.
+Пост должен: помочь отпустить день, настроить на спокойный сон, дать практику или аффирмацию на вечер.
+Стиль: мягкий, успокаивающий, тёплый. 4-5 предложений. Без хэштегов."""
+
+async def send_to_channel(text):
+    headers = {"Authorization": MAX_TOKEN, "Content-Type": "application/json"}
+    payload = {"text": text[:4000]}
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(f"{MAX_API}/messages?chat_id={MAX_CHANNEL_ID}", json=payload, headers=headers)
+        logging.info(f"Канал MAX: {r.status_code}")
+
+async def channel_posting_loop():
+    while True:
+        now = datetime.utcnow()
+
+        # Утренний пост в 9:00 МСК = 6:00 UTC
+        next_morning = now.replace(hour=6, minute=0, second=0, microsecond=0)
+        if now >= next_morning:
+            next_morning += timedelta(days=1)
+
+        # Дневной совет психолога в 13:00 МСК = 10:00 UTC
+        next_noon = now.replace(hour=10, minute=0, second=0, microsecond=0)
+        if now >= next_noon:
+            next_noon += timedelta(days=1)
+
+        # Вечерний пост в 20:00 МСК = 17:00 UTC
+        next_evening = now.replace(hour=17, minute=0, second=0, microsecond=0)
+        if now >= next_evening:
+            next_evening += timedelta(days=1)
+
+        next_event = min(next_morning, next_noon, next_evening)
+        wait_seconds = (next_event - now).total_seconds()
+        await asyncio.sleep(wait_seconds)
+
+        now = datetime.utcnow()
+        today = now.strftime("%d.%m.%Y")
+
+        try:
+            if now.hour == 6:
+                text = await generate_text(
+                    CHANNEL_SYSTEM_MORNING,
+                    f"Сегодня {today}. Напиши утренний вдохновляющий пост для канала."
+                )
+                await send_to_channel(f"🌅 Доброе утро!\n\n{text}")
+
+            elif now.hour == 10:
+                text = await generate_text(
+                    CHANNEL_SYSTEM_PSYCHO,
+                    f"Сегодня {today}. Напиши развёрнутый совет психолога на актуальную тему."
+                )
+                await send_to_channel(f"🧠 Совет психолога\n\n{text}")
+
+            elif now.hour == 17:
+                text = await generate_text(
+                    CHANNEL_SYSTEM_EVENING,
+                    f"Сегодня {today}. Напиши вечерний пост — помоги людям завершить день и настроиться на отдых."
+                )
+                await send_to_channel(f"🌙 Вечернее\n\n{text}")
+
+        except Exception as e:
+            logging.error(f"Ошибка рассылки в MAX канал: {e}")
 
 # ========== MAIN ==========
 async def main():
