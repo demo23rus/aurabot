@@ -353,29 +353,16 @@ async def generate_with_history(system, history, new_message):
 async def generate_with_claude_photo(system_prompt, image_bytes):
     import base64
     image_base64 = base64.b64encode(image_bytes).decode('utf-8')
-    async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(
-            "https://api.proxyapi.ru/anthropic/v1/messages",
-            headers={
-                "Authorization": f"Bearer {CLAUDE_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": "claude-3-7-sonnet-20250219",
-                "max_tokens": 1500,
-                "messages": [{"role": "user", "content": [
-                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_base64}},
-                    {"type": "text", "text": system_prompt}
-                ]}]
-            }
-        )
-        result = r.json()
-        logging.info(f"Claude photo response: {r.status_code}")
-        if r.status_code == 200:
-            return result["content"][0]["text"]
-        else:
-            logging.error(f"Claude photo error: {result}")
-            raise Exception(f"Claude error: {result}")
+    response = await asyncio.to_thread(
+        claude_client.messages.create,
+        model="claude-opus-4-6",
+        max_tokens=1500,
+        messages=[{"role": "user", "content": [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_base64}},
+            {"type": "text", "text": system_prompt}
+        ]}]
+    )
+    return response.content[0].text
 
 # ========== ОПЛАТА ==========
 async def create_payment(user_id, plan):
