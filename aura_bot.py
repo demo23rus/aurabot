@@ -1557,18 +1557,18 @@ async def channel_posting_loop():
         now = datetime.now()
         today = now.strftime("%d.%m.%Y")
 
-        # Утренний пост в 9:00
-        next_morning = now.replace(hour=9, minute=0, second=0, microsecond=0)
+        # Утренний пост в 9:00 МСК = 6:00 UTC
+        next_morning = now.replace(hour=6, minute=0, second=0, microsecond=0)
         if now >= next_morning:
             next_morning += timedelta(days=1)
 
-        # Дневной совет психолога в 13:00
-        next_noon = now.replace(hour=13, minute=0, second=0, microsecond=0)
+        # Дневной совет психолога в 13:00 МСК = 10:00 UTC
+        next_noon = now.replace(hour=10, minute=0, second=0, microsecond=0)
         if now >= next_noon:
             next_noon += timedelta(days=1)
 
-        # Вечерний пост в 20:00
-        next_evening = now.replace(hour=20, minute=0, second=0, microsecond=0)
+        # Вечерний пост в 20:00 МСК = 17:00 UTC
+        next_evening = now.replace(hour=17, minute=0, second=0, microsecond=0)
         if now >= next_evening:
             next_evening += timedelta(days=1)
 
@@ -1581,21 +1581,21 @@ async def channel_posting_loop():
         today = now.strftime("%d.%m.%Y")
 
         try:
-            if now.hour == 9:
+            if now.hour == 6:
                 text = await generate_text(
                     CHANNEL_SYSTEM_MORNING,
                     f"Сегодня {today}. Напиши утренний вдохновляющий пост для канала."
                 )
                 await bot.send_message(CHANNEL_ID, f"🌅 Доброе утро!\n\n{text}")
 
-            elif now.hour == 13:
+            elif now.hour == 10:
                 text = await generate_text(
                     CHANNEL_SYSTEM_PSYCHO,
                     f"Сегодня {today}. Напиши развёрнутый совет психолога на актуальную тему — выбери одну из: отношения с близкими, работа со страхами, повышение самооценки, границы в общении, выход из стресса, принятие себя."
                 )
                 await bot.send_message(CHANNEL_ID, f"🧠 Совет психолога\n\n{text}")
 
-            elif now.hour == 20:
+            elif now.hour == 17:
                 text = await generate_text(
                     CHANNEL_SYSTEM_EVENING,
                     f"Сегодня {today}. Напиши вечерний пост — помоги людям завершить день и настроиться на отдых."
