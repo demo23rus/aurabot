@@ -353,12 +353,21 @@ async def generate_with_history(system, history, new_message):
 async def generate_with_claude_photo(system_prompt, image_bytes):
     import base64
     image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+    # Определяем формат по magic bytes
+    if image_bytes[:4] == b'RIFF' or image_bytes[8:12] == b'WEBP':
+        media_type = "image/webp"
+    elif image_bytes[:8] == b'\x89PNG\r\n\x1a\n':
+        media_type = "image/png"
+    elif image_bytes[:3] == b'GIF':
+        media_type = "image/gif"
+    else:
+        media_type = "image/jpeg"
     response = await asyncio.to_thread(
         claude_client.messages.create,
         model="claude-opus-4-6",
         max_tokens=1500,
         messages=[{"role": "user", "content": [
-            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image_base64}},
+            {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": image_base64}},
             {"type": "text", "text": system_prompt}
         ]}]
     )
