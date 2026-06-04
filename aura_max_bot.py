@@ -955,6 +955,16 @@ CHANNEL_SYSTEM_EVENING = """Ты — мудрый астролог и эзоте
 Пост: помогает отпустить день, настраивает на сон, даёт практику.
 Стиль: мягкий, успокаивающий. 4-5 предложений. Без хэштегов."""
 
+CHANNEL_SYSTEM_TARO = """Ты — профессиональный таролог канала Аура — Психология.
+Каждый день вытягиваешь одну карту Таро и объясняешь её значение на сегодня.
+Каждый день РАЗНАЯ карта — не повторяй карты которые уже были.
+Структура поста:
+— Название карты и её аркан
+— Что эта карта означает сегодня для всех
+— Совет от карты на день
+— Одна короткая аффирмация
+Стиль: мистический, вдохновляющий, конкретный. Без хэштегов. Только на русском."""
+
 async def send_to_channel(text):
     headers = {"Authorization": MAX_TOKEN, "Content-Type": "application/json"}
     payload = {"text": text[:4000]}
@@ -971,6 +981,14 @@ async def channel_posting_loop():
         if now >= next_morning:
             next_morning += timedelta(days=1)
 
+        # Гороскоп в 9:05 МСК = 6:05 UTC (через 5 мин после утреннего)
+        # Обрабатывается внутри утреннего блока
+
+        # Карта Таро в 12:00 МСК = 9:00 UTC
+        next_taro = now.replace(hour=9, minute=0, second=0, microsecond=0)
+        if now >= next_taro:
+            next_taro += timedelta(days=1)
+
         # Дневной совет психолога в 13:00 МСК = 10:00 UTC
         next_noon = now.replace(hour=10, minute=0, second=0, microsecond=0)
         if now >= next_noon:
@@ -981,7 +999,7 @@ async def channel_posting_loop():
         if now >= next_evening:
             next_evening += timedelta(days=1)
 
-        next_event = min(next_morning, next_noon, next_evening)
+        next_event = min(next_morning, next_taro, next_noon, next_evening)
         wait_seconds = (next_event - now).total_seconds()
         await asyncio.sleep(wait_seconds)
 
@@ -1003,6 +1021,13 @@ async def channel_posting_loop():
                     f"Сегодня {today}. Напиши краткий гороскоп на день для всех 12 знаков. Выбери тему дня (работа/отношения/деньги/здоровье/творчество) и придерживайся её."
                 )
                 await send_to_channel(f"⭐️ Гороскоп на {today}\n\n{horoscope}")
+
+            elif now.hour == 9:
+                taro = await generate_text(
+                    CHANNEL_SYSTEM_TARO,
+                    f"Сегодня {today}. Вытяни карту Таро дня и объясни её значение. Выбери карту которая ещё не была недавно."
+                )
+                await send_to_channel(f"🃏 Карта дня — {today}\n\n{taro}")
 
             elif now.hour == 10:
                 text = await generate_text(
