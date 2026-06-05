@@ -140,10 +140,10 @@ logging.basicConfig(level=logging.INFO)
 client = AsyncOpenAI(api_key=OPENAI_KEY, base_url="https://api.proxyapi.ru/openai/v1")
 
 # ========== КЛИЕНТ CLAUDE ==========
+CLAUDE_KEY = "sk-ant-api03-23Ex-c3q51Ue6WMOlzOn_b4MetM5YxAydtyGqtV_tz7jZY1W_VZg9JqSlKuhw_HAgf4IXLNBZlQ2XZ60RbiJCg-crSF9wAA"
 CLAUDE_MODEL = "claude-sonnet-4-20250514"
 claude_client = anthropic.Anthropic(
-    api_key=OPENAI_KEY,
-    base_url="https://api.proxyapi.ru/anthropic"
+    api_key=CLAUDE_KEY
 )
 
 # ========== БАЗА ДАННЫХ ==========
@@ -413,7 +413,7 @@ async def check_access(user_id, feature="general"):
         return "start_block"
 
     # Функции только для Про
-    if feature in ("matrix", "forecast", "natal"):
+    if feature in ("matrix", "forecast", "natal", "money_code"):
         if plan == "aura_start":
             return "start_block"
         return "ok" if lim["requests"] < FREE_REQUESTS else "limit_free"
@@ -783,29 +783,48 @@ async def check_subscription_expiry():
 
 # ========== ЕЖЕДНЕВНЫЙ ГОРОСКОП ==========
 async def daily_horoscope_loop():
+    """
+    Личные рассылки пользователям в 9:05 МСК (6:05 UTC):
+    - персональный гороскоп — только Про пользователям с датой рождения
+    - лунный календарь + утреннее напутствие — всем пользователям в личку
+    Канальные посты НЕ дублируются здесь — они идут через channel_posting_loop.
+    """
     while True:
-        now = datetime.now()
-        # Отправляем в 8:00 утра
-        next_8am = now.replace(hour=8, minute=0, second=0, microsecond=0)
-        if now >= next_8am:
-            next_8am += timedelta(days=1)
-        wait_seconds = (next_8am - now).total_seconds()
+        now = datetime.utcnow()
+        # 9:05 МСК = 6:05 UTC — чуть позже основного channel_posting_loop (6:00 UTC)
+        next_run = now.replace(hour=6, minute=5, second=0, microsecond=0)
+        if now >= next_run:
+            next_run += timedelta(days=1)
+        wait_seconds = (next_run - now).total_seconds()
         await asyncio.sleep(wait_seconds)
 
-        # Отправляем гороскоп всем Про пользователям с датой рождения
-        conn = sqlite3.connect("/root/aura.db")
-        c = conn.cursor()
-        c.execute("""SELECT u.user_id, u.birth_date FROM users u
-                     JOIN subscriptions s ON u.user_id = s.user_id
-                     WHERE s.plan = 'aura_pro' AND s.sub_end > ? AND u.birth_date != ''""",
-                  (datetime.now().isoformat(),))
-        pro_users = c.fetchall()
-        conn.close()
+        today = datetime.utcnow().strftime("%d.%m.%Y")
 
-        # Утреннее духовное приветствие + лунный календарь - всем пользователям
+        # Персональный гороскоп — только Про пользователям с датой рождения
         try:
-            today = datetime.now().strftime("%d.%m.%Y")
-            # Духовное напутствие
+            conn = sqlite3.connect("/root/aura.db")
+            c = conn.cursor()
+            c.execute("""SELECT u.user_id, u.birth_date FROM users u
+                         JOIN subscriptions s ON u.user_id = s.user_id
+                         WHERE s.plan = 'aura_pro' AND s.sub_end > ? AND u.birth_date != ''""",
+                      (datetime.utcnow().isoformat(),))
+            pro_users = c.fetchall()
+            conn.close()
+            for user_id, birth_date in pro_users:
+                try:
+                    text = await generate_text(
+                        HOROSCOPE_SYSTEM,
+                        f"Дата рождения: {birth_date}\n\nСоставь персональный гороскоп на сегодня {today} по дате рождения. Расскажи о энергии дня, главной теме и совете."
+                    )
+                    await bot.send_message(user_id, f"⭐️ Твой персональный гороскоп на {today}\n\n{text}")
+                    await asyncio.sleep(0.1)
+                except Exception as e:
+                    logging.error(f"Ошибка отправки гороскопа {user_id}: {e}")
+        except Exception as e:
+            logging.error(f"Ошибка personal horoscope loop: {e}")
+
+        # Лунный календарь + утреннее напутствие — всем пользователям в личку
+        try:
             morning_text = await generate_text(
                 """Ты мудрый духовный наставник. Пишешь короткое утреннее напутствие.
                 Включи: 1) мудрость или поговорку предков, 2) энергию этого дня, 3) тёплое пожелание.
@@ -830,22 +849,10 @@ async def daily_horoscope_loop():
                 except Exception:
                     pass
         except Exception as e:
-            logging.error(f"Ошибка утренней рассылки: {e}")
+            logging.error(f"Ошибка утренней рассылки пользователям: {e}")
 
         # Проверяем истекающие подписки
         await check_subscription_expiry()
-
-        # Персональный гороскоп - только Про
-        for user_id, birth_date in pro_users:
-            try:
-                today = datetime.now().strftime("%d.%m.%Y")
-                text = await generate_text(
-                    HOROSCOPE_SYSTEM,
-                    f"Дата рождения: {birth_date}\n\nСоставь персональный гороскоп на сегодня {today} по дате рождения. Расскажи о энергии дня, главной теме и совете."
-                )
-                await bot.send_message(user_id, f"⭐️ Твой персональный гороскоп на {today}\n\n{text}")
-            except Exception as e:
-                logging.error(f"Ошибка отправки гороскопа {user_id}: {e}")
 
 # ========== КОМАНДЫ ==========
 @dp.message(Command("start"))
@@ -1314,7 +1321,7 @@ async def handle_text(message: Message):
 
 async def handle_limit_msg(message, access):
     if access == "limit_free":
-        await message.answer("🚫 Бесплатные запросы закончились (10 из 10).\n\nОформи подписку 👇", reply_markup=upgrade_menu())
+        await message.answer("🚫 Бесплатные запросы закончились (15 из 15).\n\nОформи подписку 👇", reply_markup=upgrade_menu())
     elif access in ("limit_psycho_free",):
         await message.answer("🚫 Бесплатные сообщения психологу закончились.\n\nОформи подписку 👇", reply_markup=upgrade_menu())
     elif access == "limit_psycho_start":
@@ -1425,7 +1432,7 @@ async def handle_photo(message: Message):
         "physio": (PHYSIO_SYSTEM, "physio", "photo_physio"),
         "grapho": (GRAPHO_SYSTEM, "grapho", "photo_grapho"),
         "taro_photo": (TARO_PHOTO_SYSTEM, "taro_photo", "requests"),
-        "compat_photo": (COMPAT_PHOTO_SYSTEM, "taro_photo", "requests"),
+        "compat_photo": (COMPAT_PHOTO_SYSTEM, "compat_photo", "requests"),
     }
 
     if step not in photo_steps:
