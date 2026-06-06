@@ -1663,11 +1663,81 @@ async def channel_posting_loop():
             logging.error(f"Ошибка рассылки в канал: {e}")
 
 # ========== MAIN ==========
+async def catch_up_missed_posts():
+    """
+    При старте бота проверяем — какие посты сегодня уже должны были выйти,
+    но не вышли из-за того что бот не работал. Отправляем их с задержкой 10 сек между постами.
+    Расписание МСК: 9:00 утро+гороскоп, 12:00 таро, 13:00 психолог, 20:00 вечер.
+    UTC: 6:00, 9:00, 10:00, 17:00.
+    """
+    now = datetime.utcnow()
+    today = now.strftime("%d.%m.%Y")
+    current_hour = now.hour
+
+    # Список постов которые должны были выйти сегодня до текущего момента
+    # (час UTC, название для лога)
+    schedule = [
+        (6,  "morning"),
+        (9,  "taro"),
+        (10, "psycho"),
+        (17, "evening"),
+    ]
+
+    missed = [name for hour, name in schedule if current_hour > hour]
+
+    if not missed:
+        return
+
+    logging.info(f"catch_up: обнаружены пропущенные посты: {missed}")
+
+    for name in missed:
+        try:
+            if name == "morning":
+                text = await generate_text(
+                    CHANNEL_SYSTEM_MORNING,
+                    f"Сегодня {today}. Напиши утренний вдохновляющий пост. Выбери новую тему."
+                )
+                await bot.send_message(CHANNEL_ID, f"🌅 Доброе утро!\n\n{text}")
+                await asyncio.sleep(10)
+                horoscope = await generate_text(
+                    CHANNEL_SYSTEM_HOROSCOPE,
+                    f"Сегодня {today}. Напиши краткий гороскоп на день для всех 12 знаков. Выбери тему дня."
+                )
+                await bot.send_message(CHANNEL_ID, f"⭐️ Гороскоп на {today}\n\n{horoscope}")
+
+            elif name == "taro":
+                taro = await generate_text(
+                    CHANNEL_SYSTEM_TARO,
+                    f"Сегодня {today}. Вытяни карту Таро дня. Выбери карту которая ещё не была недавно."
+                )
+                await bot.send_message(CHANNEL_ID, f"🃏 Карта дня — {today}\n\n{taro}")
+
+            elif name == "psycho":
+                text = await generate_text(
+                    CHANNEL_SYSTEM_PSYCHO,
+                    f"Сегодня {today}. Напиши совет психолога. Выбери новую тему."
+                )
+                await bot.send_message(CHANNEL_ID, f"🧠 Совет психолога\n\n{text}")
+
+            elif name == "evening":
+                text = await generate_text(
+                    CHANNEL_SYSTEM_EVENING,
+                    f"Сегодня {today}. Напиши вечерний пост. Выбери новую тему."
+                )
+                await bot.send_message(CHANNEL_ID, f"🌙 Вечернее\n\n{text}")
+
+            logging.info(f"catch_up: пост '{name}' отправлен")
+            await asyncio.sleep(10)
+
+        except Exception as e:
+            logging.error(f"catch_up: ошибка при отправке '{name}': {e}")
+
 async def main():
     init_db()
     asyncio.create_task(check_payments_loop())
     asyncio.create_task(daily_horoscope_loop())
     asyncio.create_task(channel_posting_loop())
+    asyncio.create_task(catch_up_missed_posts())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
