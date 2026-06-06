@@ -91,6 +91,86 @@ def sheets_log_review(user_id, first_name, username, review_text):
     except Exception as e:
         logging.error(f"Ошибка записи отзыва в Sheets: {e}")
 
+# ========== ЛОГИ ==========
+logging.basicConfig(level=logging.INFO)
+
+# ========== КЛИЕНТЫ AI ==========
+openai_client = AsyncOpenAI(api_key=OPENAI_KEY, base_url="https://api.proxyapi.ru/openai/v1")
+claude_client = anthropic.Anthropic(api_key=CLAUDE_KEY)
+
+# ========== MAX API ==========
+async def send_message(chat_id, text, buttons=None):
+    headers = {"Authorization": MAX_TOKEN, "Content-Type": "application/json"}
+    payload = {"text": text[:4000]}
+    if buttons:
+        payload["attachments"] = [{"type": "inline_keyboard", "payload": {"buttons": buttons}}]
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(f"{MAX_API}/messages?chat_id={chat_id}", json=payload, headers=headers)
+        logging.info(f"send_message chat_id={chat_id}: {r.status_code}")
+        return r.json()
+
+async def get_photo(photo_url):
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.get(photo_url)
+            if r.status_code == 200 and len(r.content) > 100:
+                return r.content
+            logging.error(f"Ошибка скачивания фото: {r.status_code}")
+            return None
+    except Exception as e:
+        logging.error(f"Ошибка get_photo: {e}")
+        return None
+
+# ========== КНОПКИ ==========
+def main_menu_buttons():
+    return [
+        [{"type": "callback", "text": "🔢 Нумерология", "payload": "numerology"},
+         {"type": "callback", "text": "🃏 Таро", "payload": "taro"}],
+        [{"type": "callback", "text": "💤 Сны", "payload": "dreams"},
+         {"type": "callback", "text": "🌈 Аура", "payload": "aura"}],
+        [{"type": "callback", "text": "🌟 Гороскоп", "payload": "horoscope"},
+         {"type": "callback", "text": "❤️ Совместимость", "payload": "compatibility"}],
+        [{"type": "callback", "text": "🧠 AI-Психолог", "payload": "psycho"},
+         {"type": "callback", "text": "📔 Личный дневник", "payload": "diary"}],
+        [{"type": "callback", "text": "🖐 Хиромантия", "payload": "chiromancy"},
+         {"type": "callback", "text": "😊 Физиогномика", "payload": "physio"}],
+        [{"type": "callback", "text": "✍️ Графология", "payload": "grapho"}],
+        [{"type": "callback", "text": "🔥 ПРО ФУНКЦИИ 🔥", "payload": "noop"}],
+        [{"type": "callback", "text": "🌌 Матрица судьбы", "payload": "matrix"},
+         {"type": "callback", "text": "📅 Прогноз", "payload": "forecast"}],
+        [{"type": "callback", "text": "♈ Натальная карта", "payload": "natal"},
+         {"type": "callback", "text": "💰 Денежный код", "payload": "money_code"}],
+        [{"type": "callback", "text": "🃏 Таро по фото", "payload": "taro_photo"},
+         {"type": "callback", "text": "👫 Совместимость фото", "payload": "compat_photo"}],
+        [{"type": "callback", "text": "💎 Тарифы и оплата", "payload": "tariffs"}],
+        [{"type": "callback", "text": "⭐️ Оставить отзыв", "payload": "review"}],
+        [{"type": "link", "text": "💬 Поддержка", "url": SUPPORT_URL}],
+    ]
+
+def back_button():
+    return [[{"type": "callback", "text": "🔙 В меню", "payload": "back_menu"}]]
+
+def upgrade_buttons(plan="any"):
+    if plan == "start":
+        return [
+            [{"type": "callback", "text": "🔥 Купить Про — 390 руб", "payload": "pay_pro"}],
+            [{"type": "callback", "text": "🔙 В меню", "payload": "back_menu"}]
+        ]
+    return [
+        [{"type": "callback", "text": "🟢 Старт — 190 руб", "payload": "pay_start"}],
+        [{"type": "callback", "text": "🔥 Про — 390 руб", "payload": "pay_pro"}],
+        [{"type": "callback", "text": "🔙 В меню", "payload": "back_menu"}]
+    ]
+
+def psycho_buttons():
+    return [
+        [{"type": "callback", "text": "🔄 Новый разговор", "payload": "psycho_new"}],
+        [{"type": "callback", "text": "🔙 В меню", "payload": "back_menu"}]
+    ]
+
+# ========== БАЗА ДАННЫХ ==========
+DB = "/root/aura_max.db"
+
 def init_db():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
@@ -98,13 +178,9 @@ def init_db():
         user_id INTEGER PRIMARY KEY,
         username TEXT DEFAULT '',
         first_name TEXT DEFAULT '',
+        step TEXT DEFAULT '',
         birth_date TEXT DEFAULT '',
-        created_at TEXT
-    )""")
-    c.execute("""CREATE TABLE IF NOT EXISTS subscriptions (
-        user_id INTEGER PRIMARY KEY,
-        plan TEXT DEFAULT 'free',
-        sub_end TEXT DEFAULT ''
+        registered_at TEXT DEFAULT ''
     )""")
     c.execute("""CREATE TABLE IF NOT EXISTS limits (
         user_id INTEGER PRIMARY KEY,
@@ -114,10 +190,24 @@ def init_db():
         photo_physio INTEGER DEFAULT 0,
         photo_grapho INTEGER DEFAULT 0
     )""")
-    c.execute("""CREATE TABLE IF NOT EXISTS steps (
+    c.execute("""CREATE TABLE IF NOT EXISTS subscriptions (
         user_id INTEGER PRIMARY KEY,
-        step TEXT DEFAULT 'idle',
-        data TEXT DEFAULT ''
+        plan TEXT DEFAULT '',
+        sub_end TEXT DEFAULT ''
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS psycho_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        role TEXT,
+        content TEXT,
+        created_at TEXT
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS diary (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        entry TEXT,
+        response TEXT,
+        created_at TEXT
     )""")
     c.execute("""CREATE TABLE IF NOT EXISTS pending_payments (
         payment_id TEXT PRIMARY KEY,
@@ -139,12 +229,18 @@ def init_db():
 def get_user(user_id, username="", first_name=""):
     conn = sqlite3.connect(DB)
     c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO users (user_id, username, first_name, created_at) VALUES (?,?,?,?)",
+    c.execute("INSERT OR IGNORE INTO users (user_id, username, first_name, registered_at) VALUES (?,?,?,?)",
               (user_id, username, first_name, datetime.now().isoformat()))
-    c.execute("UPDATE users SET username=?, first_name=? WHERE user_id=?",
-              (username, first_name, user_id))
-    c.execute("INSERT OR IGNORE INTO subscriptions (user_id) VALUES (?)", (user_id,))
-    c.execute("INSERT OR IGNORE INTO steps (user_id) VALUES (?)", (user_id,))
+    c.execute("INSERT OR IGNORE INTO limits (user_id) VALUES (?)", (user_id,))
+    conn.commit()
+    c.execute("SELECT step, birth_date FROM users WHERE user_id=?", (user_id,))
+    row = c.fetchone()
+    conn.close()
+    return {"step": row[0], "birth_date": row[1]}
+
+def set_step(user_id, step):
+    conn = sqlite3.connect(DB)
+    conn.execute("UPDATE users SET step=? WHERE user_id=?", (step, user_id))
     conn.commit()
     conn.close()
 
@@ -154,41 +250,20 @@ def get_subscription(user_id):
     c.execute("SELECT plan, sub_end FROM subscriptions WHERE user_id=?", (user_id,))
     row = c.fetchone()
     conn.close()
-    if not row:
-        return "free", ""
-    plan, sub_end = row
-    if plan != "free" and sub_end:
-        if datetime.now().isoformat() > sub_end:
-            conn2 = sqlite3.connect(DB)
-            conn2.execute("UPDATE subscriptions SET plan='free', sub_end='' WHERE user_id=?", (user_id,))
-            conn2.commit()
-            conn2.close()
-            return "free", ""
-    return plan, sub_end
+    if not row or not row[1]:
+        return None, None
+    sub_end = datetime.fromisoformat(row[1])
+    if sub_end > datetime.now():
+        return row[0], sub_end
+    return None, None
 
-def set_subscription(user_id, plan, days=30):
-    sub_end = (datetime.now() + timedelta(days=days)).isoformat()
+def set_subscription(user_id, plan, days):
     conn = sqlite3.connect(DB)
-    conn.execute("INSERT OR IGNORE INTO subscriptions (user_id) VALUES (?)", (user_id,))
-    conn.execute("UPDATE subscriptions SET plan=?, sub_end=? WHERE user_id=?", (plan, sub_end, user_id))
+    end = (datetime.now() + timedelta(days=days)).isoformat()
+    conn.execute("INSERT OR REPLACE INTO subscriptions (user_id, plan, sub_end) VALUES (?,?,?)",
+                 (user_id, plan, end))
     conn.commit()
     conn.close()
-
-def get_step(user_id):
-    conn = sqlite3.connect(DB)
-    c = conn.cursor()
-    c.execute("SELECT step, data FROM steps WHERE user_id=?", (user_id,))
-    row = c.fetchone()
-    conn.close()
-    return (row[0], row[1]) if row else ("idle", "")
-
-def set_step(user_id, step, data=""):
-    conn = sqlite3.connect(DB)
-    conn.execute("INSERT OR IGNORE INTO steps (user_id) VALUES (?)", (user_id,))
-    conn.execute("UPDATE steps SET step=?, data=? WHERE user_id=?", (step, data, user_id))
-    conn.commit()
-    conn.close()
-
 
 def get_limits(user_id):
     conn = sqlite3.connect(DB)
@@ -264,7 +339,6 @@ def delete_pending_payment(payment_id):
     conn.close()
 
 def save_review(user_id, username, first_name, review_text):
-    """Сохраняет отзыв в SQLite."""
     conn = sqlite3.connect(DB)
     conn.execute("INSERT INTO reviews (user_id, username, first_name, review, created_at) VALUES (?,?,?,?,?)",
                  (user_id, username or "", first_name or "", review_text, datetime.now().isoformat()))
@@ -523,9 +597,7 @@ async def process_command(chat_id, user_id, text, username="", first_name=""):
     # Обработка шагов
     if step == "review":
         set_step(user_id, "idle")
-        # Сохраняем отзыв в SQLite
         save_review(user_id, username, first_name, text)
-        # Записываем в Google Sheets
         asyncio.create_task(asyncio.to_thread(sheets_log_review, user_id, first_name, username, text))
         await send_message(chat_id, "⭐️ Спасибо за отзыв! Обязательно учтём.", main_menu_buttons())
         return
