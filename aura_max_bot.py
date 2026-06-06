@@ -32,7 +32,7 @@ YOOKASSA_SECRET = "live_-RKE9nsi8wZiM-5f00z78E84OYSi3M0Dj9w_-pE0Mvw"
 
 # ========== GOOGLE SHEETS ==========
 GOOGLE_CREDS_PATH = "/root/google_credentials.json"
-SPREADSHEET_NAME = "АураМакс"
+SPREADSHEET_NAME = "PostGenius Users"
 SHEET_NAME = "АураМакс"
 
 def get_gsheet():
