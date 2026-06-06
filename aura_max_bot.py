@@ -91,6 +91,105 @@ def sheets_log_review(user_id, first_name, username, review_text):
     except Exception as e:
         logging.error(f"Ошибка записи отзыва в Sheets: {e}")
 
+def init_db():
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute("""CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY,
+        username TEXT DEFAULT '',
+        first_name TEXT DEFAULT '',
+        birth_date TEXT DEFAULT '',
+        created_at TEXT
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS subscriptions (
+        user_id INTEGER PRIMARY KEY,
+        plan TEXT DEFAULT 'free',
+        sub_end TEXT DEFAULT ''
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS limits (
+        user_id INTEGER PRIMARY KEY,
+        requests INTEGER DEFAULT 0,
+        psycho_messages INTEGER DEFAULT 0,
+        photo_chiromancy INTEGER DEFAULT 0,
+        photo_physio INTEGER DEFAULT 0,
+        photo_grapho INTEGER DEFAULT 0
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS steps (
+        user_id INTEGER PRIMARY KEY,
+        step TEXT DEFAULT 'idle',
+        data TEXT DEFAULT ''
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS pending_payments (
+        payment_id TEXT PRIMARY KEY,
+        user_id INTEGER,
+        plan TEXT,
+        created_at TEXT
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS reviews (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        username TEXT DEFAULT '',
+        first_name TEXT DEFAULT '',
+        review TEXT,
+        created_at TEXT
+    )""")
+    conn.commit()
+    conn.close()
+
+def get_user(user_id, username="", first_name=""):
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute("INSERT OR IGNORE INTO users (user_id, username, first_name, created_at) VALUES (?,?,?,?)",
+              (user_id, username, first_name, datetime.now().isoformat()))
+    c.execute("UPDATE users SET username=?, first_name=? WHERE user_id=?",
+              (username, first_name, user_id))
+    c.execute("INSERT OR IGNORE INTO subscriptions (user_id) VALUES (?)", (user_id,))
+    c.execute("INSERT OR IGNORE INTO steps (user_id) VALUES (?)", (user_id,))
+    conn.commit()
+    conn.close()
+
+def get_subscription(user_id):
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute("SELECT plan, sub_end FROM subscriptions WHERE user_id=?", (user_id,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return "free", ""
+    plan, sub_end = row
+    if plan != "free" and sub_end:
+        if datetime.now().isoformat() > sub_end:
+            conn2 = sqlite3.connect(DB)
+            conn2.execute("UPDATE subscriptions SET plan='free', sub_end='' WHERE user_id=?", (user_id,))
+            conn2.commit()
+            conn2.close()
+            return "free", ""
+    return plan, sub_end
+
+def set_subscription(user_id, plan, days=30):
+    sub_end = (datetime.now() + timedelta(days=days)).isoformat()
+    conn = sqlite3.connect(DB)
+    conn.execute("INSERT OR IGNORE INTO subscriptions (user_id) VALUES (?)", (user_id,))
+    conn.execute("UPDATE subscriptions SET plan=?, sub_end=? WHERE user_id=?", (plan, sub_end, user_id))
+    conn.commit()
+    conn.close()
+
+def get_step(user_id):
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute("SELECT step, data FROM steps WHERE user_id=?", (user_id,))
+    row = c.fetchone()
+    conn.close()
+    return (row[0], row[1]) if row else ("idle", "")
+
+def set_step(user_id, step, data=""):
+    conn = sqlite3.connect(DB)
+    conn.execute("INSERT OR IGNORE INTO steps (user_id) VALUES (?)", (user_id,))
+    conn.execute("UPDATE steps SET step=?, data=? WHERE user_id=?", (step, data, user_id))
+    conn.commit()
+    conn.close()
+
+
 def get_limits(user_id):
     conn = sqlite3.connect(DB)
     c = conn.cursor()
