@@ -2,6 +2,13 @@ import asyncio
 import sqlite3
 import logging
 import uuid
+import os
+import json
+import re
+import hashlib
+import random
+from urllib.parse import quote
+from zoneinfo import ZoneInfo
 import httpx
 from datetime import datetime, timedelta
 from openai import AsyncOpenAI
@@ -21,8 +28,8 @@ OWNER_ID = 549639607
 SUPPORT_URL = "https://t.me/Boss023rus"
 
 # Лимиты
-FREE_REQUESTS = 15
-FREE_PSYCHO = 30
+FREE_REQUESTS = 5
+FREE_PSYCHO = 15
 START_PSYCHO = 100
 START_PHOTO = 5
 
@@ -107,7 +114,10 @@ async def send_message(chat_id, text, buttons=None):
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(f"{MAX_API}/messages?chat_id={chat_id}", json=payload, headers=headers)
         logging.info(f"send_message chat_id={chat_id}: {r.status_code}")
-        return r.json()
+        if r.status_code >= 400:
+            raise RuntimeError(f"MAX send error {r.status_code}: {r.text[:500]}")
+        try: return r.json()
+        except Exception: return {"ok": True}
 
 async def get_photo(photo_url):
     try:
@@ -124,28 +134,48 @@ async def get_photo(photo_url):
 # ========== КНОПКИ ==========
 def main_menu_buttons():
     return [
-        [{"type": "callback", "text": "🔢 Нумерология", "payload": "numerology"},
-         {"type": "callback", "text": "🃏 Таро", "payload": "taro"}],
-        [{"type": "callback", "text": "💤 Сны", "payload": "dreams"},
-         {"type": "callback", "text": "🌈 Аура", "payload": "aura"}],
-        [{"type": "callback", "text": "🌟 Гороскоп", "payload": "horoscope"},
-         {"type": "callback", "text": "❤️ Совместимость", "payload": "compatibility"}],
-        [{"type": "callback", "text": "🧠 AI-Психолог", "payload": "psycho"},
-         {"type": "callback", "text": "📔 Личный дневник", "payload": "diary"}],
-        [{"type": "callback", "text": "🖐 Хиромантия", "payload": "chiromancy"},
-         {"type": "callback", "text": "😊 Физиогномика", "payload": "physio"}],
-        [{"type": "callback", "text": "✍️ Графология", "payload": "grapho"}],
-        [{"type": "callback", "text": "🔥 ПРО ФУНКЦИИ 🔥", "payload": "noop"}],
-        [{"type": "callback", "text": "🌌 Матрица судьбы", "payload": "matrix"},
-         {"type": "callback", "text": "📅 Прогноз", "payload": "forecast"}],
-        [{"type": "callback", "text": "♈ Натальная карта", "payload": "natal"},
-         {"type": "callback", "text": "💰 Денежный код", "payload": "money_code"}],
-        [{"type": "callback", "text": "🃏 Таро по фото", "payload": "taro_photo"},
-         {"type": "callback", "text": "👫 Совместимость фото", "payload": "compat_photo"}],
-        [{"type": "callback", "text": "💎 Тарифы и оплата", "payload": "tariffs"}],
-        [{"type": "callback", "text": "⭐️ Оставить отзыв", "payload": "review"}],
+        [{"type": "callback", "text": "🔮 Разобрать ситуацию", "payload": "cat_situation"}],
+        [{"type": "callback", "text": "❤️ Отношения", "payload": "cat_love"},
+         {"type": "callback", "text": "💰 Деньги", "payload": "cat_money"}],
+        [{"type": "callback", "text": "🧠 Психолог", "payload": "psycho"},
+         {"type": "callback", "text": "📔 Дневник", "payload": "diary"}],
+        [{"type": "callback", "text": "✨ Узнать себя", "payload": "cat_self"}],
+        [{"type": "callback", "text": "🌟 Мой день", "payload": "my_day"},
+         {"type": "callback", "text": "👤 Профиль", "payload": "profile"}],
+        [{"type": "callback", "text": "💎 Тарифы", "payload": "tariffs"},
+         {"type": "callback", "text": "🎁 Пригласить", "payload": "referral"}],
+        [{"type": "callback", "text": "⭐️ Отзыв", "payload": "review"}],
         [{"type": "link", "text": "💬 Поддержка", "url": SUPPORT_URL}],
     ]
+
+def category_buttons(category):
+    menus = {
+        "situation": [
+            [{"type":"callback","text":"🃏 Таро на ситуацию","payload":"taro"}],
+            [{"type":"callback","text":"💤 Толкование сна","payload":"dreams"}],
+            [{"type":"callback","text":"📅 Прогноз на период","payload":"forecast"}],
+        ],
+        "love": [
+            [{"type":"callback","text":"❤️ Совместимость по датам","payload":"compatibility"}],
+            [{"type":"callback","text":"👫 Совместимость по фото","payload":"compat_photo"}],
+            [{"type":"callback","text":"🃏 Таро на отношения","payload":"taro"}],
+        ],
+        "money": [
+            [{"type":"callback","text":"💰 Денежный код","payload":"money_code"}],
+            [{"type":"callback","text":"🌌 Матрица судьбы","payload":"matrix"}],
+            [{"type":"callback","text":"📊 Прогноз на год","payload":"forecast"}],
+        ],
+        "self": [
+            [{"type":"callback","text":"🔢 Нумерология","payload":"numerology"}],
+            [{"type":"callback","text":"🌈 Энергия по дате","payload":"aura"}],
+            [{"type":"callback","text":"🔮 Аура по фото","payload":"aura_photo"}],
+            [{"type":"callback","text":"🖐 Хиромантия","payload":"chiromancy"}],
+            [{"type":"callback","text":"😊 Впечатление по фото","payload":"physio"}],
+            [{"type":"callback","text":"✍️ Графология","payload":"grapho"}],
+            [{"type":"callback","text":"♈ Натальная карта","payload":"natal"}],
+        ],
+    }
+    return menus.get(category, []) + [[{"type":"callback","text":"🔙 В меню","payload":"back_menu"}]]
 
 def back_button():
     return [[{"type": "callback", "text": "🔙 В меню", "payload": "back_menu"}]]
@@ -159,6 +189,7 @@ def upgrade_buttons(plan="any"):
     return [
         [{"type": "callback", "text": "🟢 Старт — 190 руб", "payload": "pay_start"}],
         [{"type": "callback", "text": "🔥 Про — 390 руб", "payload": "pay_pro"}],
+        [{"type": "callback", "text": "💜 Про на год — 2 990 руб", "payload": "pay_year"}],
         [{"type": "callback", "text": "🔙 В меню", "payload": "back_menu"}]
     ]
 
@@ -223,6 +254,23 @@ def init_db():
         review TEXT,
         created_at TEXT
     )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS analytics_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, event TEXT,
+        feature TEXT DEFAULT '', source TEXT DEFAULT '', value TEXT DEFAULT '', created_at TEXT)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS processed_updates (
+        update_key TEXT PRIMARY KEY, processed_at TEXT)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS channel_posts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, slot_key TEXT UNIQUE, rubric TEXT,
+        topic TEXT DEFAULT '', content TEXT, status TEXT DEFAULT 'pending', published_at TEXT)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS user_profiles (
+        user_id INTEGER PRIMARY KEY, birth_date TEXT DEFAULT '', birth_time TEXT DEFAULT '',
+        birth_place TEXT DEFAULT '', focus TEXT DEFAULT '', source TEXT DEFAULT '',
+        referrer_id INTEGER, stopped INTEGER DEFAULT 0, consent_photo INTEGER DEFAULT 0)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS usage_periods (
+        user_id INTEGER PRIMARY KEY, period_start TEXT, period_end TEXT,
+        requests INTEGER DEFAULT 0, psycho INTEGER DEFAULT 0, photo INTEGER DEFAULT 0)""")
+    c.execute("PRAGMA journal_mode=WAL")
+    c.execute("PRAGMA busy_timeout=5000")
     conn.commit()
     conn.close()
 
@@ -258,12 +306,23 @@ def get_subscription(user_id):
     return None, None
 
 def set_subscription(user_id, plan, days):
-    conn = sqlite3.connect(DB)
-    end = (datetime.now() + timedelta(days=days)).isoformat()
-    conn.execute("INSERT OR REPLACE INTO subscriptions (user_id, plan, sub_end) VALUES (?,?,?)",
-                 (user_id, plan, end))
-    conn.commit()
-    conn.close()
+    conn = sqlite3.connect(DB, timeout=10)
+    now = datetime.now()
+    current = conn.execute("SELECT plan, sub_end FROM subscriptions WHERE user_id=?", (user_id,)).fetchone()
+    base = now
+    if current and current[1]:
+        try:
+            old_end = datetime.fromisoformat(current[1])
+            if old_end > now and current[0] == plan:
+                base = old_end
+        except Exception:
+            pass
+    end = (base + timedelta(days=days)).isoformat()
+    conn.execute("INSERT OR REPLACE INTO subscriptions (user_id, plan, sub_end) VALUES (?,?,?)", (user_id, plan, end))
+    conn.execute("UPDATE limits SET requests=0, psycho_messages=0, photo_chiromancy=0, photo_physio=0, photo_grapho=0 WHERE user_id=?", (user_id,))
+    conn.execute("INSERT OR REPLACE INTO usage_periods (user_id, period_start, period_end, requests, psycho, photo) VALUES (?,?,?,?,?,?)",
+                 (user_id, now.isoformat(), end, 0, 0, 0))
+    conn.commit(); conn.close()
 
 def get_limits(user_id):
     conn = sqlite3.connect(DB)
@@ -363,7 +422,7 @@ async def check_access(user_id, feature="general"):
             return "ok"
         return "diary_blocked"
 
-    if feature in ("compat_photo", "taro_photo", "money_code"):
+    if feature in ("compat_photo", "taro_photo", "money_code", "aura_photo"):
         return "start_block"
 
     if feature in ("matrix", "forecast", "natal"):
@@ -371,7 +430,7 @@ async def check_access(user_id, feature="general"):
             return "start_block"
         return "ok" if lim["requests"] < FREE_REQUESTS else "limit_free"
 
-    photo_map = {"chiromancy": "chiromancy", "physio": "physio", "grapho": "grapho"}
+    photo_map = {"chiromancy": "chiromancy", "physio": "physio", "grapho": "grapho", "aura_photo": "aura_photo"}
     if feature in photo_map:
         if plan == "aura_start":
             return "ok" if lim[feature] < START_PHOTO else "limit_photo"
@@ -403,10 +462,10 @@ NATAL_SYSTEM = "Ты мудрый астролог с 20-летним опыто
 HOROSCOPE_SYSTEM = "Ты мудрый астролог с 20-летним опытом. Пишешь только на русском. Никаких звёздочек и решёток. Обращайся на ты."
 MONEY_CODE_SYSTEM = "Ты мудрый нумеролог специализирующийся на денежном коде. Пишешь только на русском. Никаких звёздочек и решёток. Обращайся на ты."
 CHIROMANCY_SYSTEM = "Ты опытный хиромант. Смотришь на фото ладони и рассказываешь конкретно и лично. Пишешь только на русском. Никаких звёздочек и решёток."
-PHYSIO_SYSTEM = "Ты опытный физиогномист. Смотришь на фото лица и рассказываешь о характере конкретно. Пишешь только на русском. Никаких звёздочек и решёток."
+PHYSIO_SYSTEM = "Ты делаешь только развлекательный и рефлексивный разбор визуального впечатления от фото. Не определяй характер как факт, здоровье, интеллект, этничность, религию, ориентацию, надёжность или диагнозы. Используй формулировки 'может создавать впечатление'. Пишешь только на русском."
 GRAPHO_SYSTEM = "Ты опытный графолог. Смотришь на фото почерка и рассказываешь о характере конкретно. Пишешь только на русском. Никаких звёздочек и решёток."
 TARO_PHOTO_SYSTEM = "Ты опытный таролог. Смотришь на фото карт Таро и читаешь расклад. Пишешь только на русском. Никаких звёздочек и решёток."
-COMPAT_PHOTO_SYSTEM = "Ты опытный физиогномист и психолог. Анализируешь совместимость двух людей по фото. Пишешь только на русском. Никаких звёздочек и решёток."
+COMPAT_PHOTO_SYSTEM = "Ты делаешь развлекательную рефлексию о визуальной динамике пары по фото. Не утверждай совместимость как факт и не определяй чувствительные черты. Дай вопросы для разговора и подчеркни, что отношения определяются поведением и общением. Только на русском."
 LUNAR_SYSTEM = "Ты мудрый астролог и знаток лунного календаря. Пишешь тепло, конкретно, практично. Только на русском. Никаких звёздочек и решёток."
 
 # ========== AI ФУНКЦИИ ==========
@@ -453,8 +512,8 @@ async def generate_with_claude_photo(system_prompt, image_bytes):
 
 # ========== ОПЛАТА ==========
 async def create_payment(user_id, plan):
-    amount = "190.00" if plan == "aura_start" else "390.00"
-    plan_name = "Старт" if plan == "aura_start" else "Про"
+    prices = {"aura_start": ("190.00", "Старт", 30), "aura_pro": ("390.00", "Про", 30), "aura_pro_year": ("2990.00", "Про на год", 365)}
+    amount, plan_name, days = prices.get(plan, prices["aura_pro"])
     async with httpx.AsyncClient() as client:
         r = await client.post(
             "https://api.yookassa.ru/v3/payments",
@@ -464,7 +523,7 @@ async def create_payment(user_id, plan):
                 "capture": True,
                 "description": f"AuraBot MAX Тариф {plan_name} — {user_id}",
                 "receipt": {"customer": {"email": "6038484@mail.ru"}, "items": [{
-                    "description": f"AuraBot Тариф {plan_name} 30 дней",
+                    "description": f"AuraBot Тариф {plan_name} {days} дней",
                     "quantity": "1.00",
                     "amount": {"value": amount, "currency": "RUB"},
                     "vat_code": 1, "payment_subject": "service", "payment_mode": "full_payment"
@@ -490,9 +549,18 @@ async def check_payments_loop():
                         )
                         payment = r.json()
                     if payment.get("status") == "succeeded":
-                        set_subscription(user_id, plan, 30)
+                        activation_plan = "aura_pro" if plan == "aura_pro_year" else plan
+                        activation_days = 365 if plan == "aura_pro_year" else 30
+                        set_subscription(user_id, activation_plan, activation_days)
+                        log_event(user_id, "payment_succeeded", feature=plan, value=payment_id)
+                        with db_connect() as conn:
+                            ref=conn.execute("SELECT referrer_id FROM user_profiles WHERE user_id=?",(user_id,)).fetchone()
+                        if ref and ref[0]:
+                            set_subscription(int(ref[0]), "aura_pro", 30)
+                            try: await send_message(int(ref[0]), "🎁 Твой приглашённый друг оформил подписку. Тебе начислено 30 дней Аура Про!", main_menu_buttons())
+                            except Exception: pass
                         delete_pending_payment(payment_id)
-                        plan_name = "🟢 Старт" if plan == "aura_start" else "🔥 Про"
+                        plan_name = "🟢 Старт" if plan == "aura_start" else ("💜 Про на год" if plan == "aura_pro_year" else "🔥 Про")
                         await send_message(user_id,
                             f"✅ Оплата прошла!\n\nТариф {plan_name} активирован на 30 дней.\n\nПользуйся на здоровье! 🔮",
                             main_menu_buttons()
@@ -508,67 +576,109 @@ async def check_payments_loop():
 # ========== УТРЕННИЕ РАССЫЛКИ ==========
 async def daily_loop():
     while True:
-        now = datetime.now()
-        next_8am = now.replace(hour=8, minute=0, second=0, microsecond=0)
-        if now >= next_8am:
-            next_8am += timedelta(days=1)
-        await asyncio.sleep((next_8am - now).total_seconds())
-
-        today = datetime.now().strftime("%d.%m.%Y")
+        now = datetime.now(MOSCOW)
+        next_run = now.replace(hour=8, minute=0, second=0, microsecond=0)
+        if now >= next_run:
+            next_run += timedelta(days=1)
+        await asyncio.sleep(max(1, (next_run - now).total_seconds()))
+        today = datetime.now(MOSCOW).strftime("%d.%m.%Y")
         try:
             lunar_text = await generate_text(LUNAR_SYSTEM,
-                f"Сегодня {today}. Составь лунный прогноз: фаза луны, что благоприятно делать, чего избегать, совет дня.")
-            conn = sqlite3.connect(DB)
-            users = conn.execute("SELECT user_id FROM users").fetchall()
-            conn.close()
+                f"Сегодня {today}. Дай мягкий общий лунный настрой без выдумывания точной астрономической фазы, если она не передана: что полезно делать, чего избегать, совет дня.")
+            with db_connect() as conn:
+                users = conn.execute("SELECT u.user_id FROM users u LEFT JOIN user_profiles p ON p.user_id=u.user_id WHERE COALESCE(p.stopped,0)=0").fetchall()
             for (uid,) in users:
                 try:
-                    await send_message(uid, f"🌙 Лунный календарь на {today}\n\n{lunar_text}")
-                    await asyncio.sleep(0.05)
-                except Exception:
-                    pass
+                    await send_message(uid, f"🌙 Настрой на {today}\n\n{lunar_text}")
+                    await asyncio.sleep(0.04)
+                except Exception as e:
+                    logging.warning(f"daily lunar {uid}: {e}")
         except Exception as e:
-            logging.error(f"Ошибка лунного календаря: {e}")
-
-        conn = sqlite3.connect(DB)
-        pro_users = conn.execute("""SELECT u.user_id, u.birth_date FROM users u
-            JOIN subscriptions s ON u.user_id = s.user_id
-            WHERE s.plan = 'aura_pro' AND s.sub_end > ? AND u.birth_date != ''""",
-            (datetime.now().isoformat(),)).fetchall()
-        conn.close()
-        for user_id, birth_date in pro_users:
+            logging.exception(f"Ошибка общего утреннего сообщения: {e}")
+        with db_connect() as conn:
+            pro_users = conn.execute("""SELECT u.user_id, COALESCE(p.birth_date,u.birth_date) FROM users u
+                JOIN subscriptions s ON u.user_id=s.user_id
+                LEFT JOIN user_profiles p ON p.user_id=u.user_id
+                WHERE s.plan='aura_pro' AND s.sub_end>? AND COALESCE(p.birth_date,u.birth_date,'')!='' AND COALESCE(p.stopped,0)=0""",
+                (datetime.now().isoformat(),)).fetchall()
+        for uid,birth in pro_users:
             try:
-                text = await generate_text(HOROSCOPE_SYSTEM,
-                    f"Дата рождения: {birth_date}\n\nПерсональный гороскоп на {today} по дате рождения.")
-                await send_message(user_id, f"⭐️ Твой персональный гороскоп на {today}\n\n{text}")
-            except Exception as e:
-                logging.error(f"Ошибка гороскопа {user_id}: {e}")
+                text=await generate_text(HOROSCOPE_SYSTEM,f"Дата рождения: {birth}. Сегодня {today}. Дай персональную подсказку: энергия, отношения, деньги, главное действие. Без фатальных обещаний.")
+                await send_message(uid,f"⭐️ Твоя личная подсказка на {today}\n\n{text}")
+                await asyncio.sleep(0.04)
+            except Exception as e: logging.warning(f"personal daily {uid}: {e}")
+
+# ========== АНАЛИТИКА И ПРОФИЛЬ ==========
+BOT_LINK = "https://max.ru/id232007136009_bot"
+MOSCOW = ZoneInfo("Europe/Moscow")
+UPDATE_QUEUE = asyncio.Queue(maxsize=1000)
+
+def db_connect():
+    return sqlite3.connect(DB, timeout=10)
+
+def log_event(user_id, event, feature="", source="", value=""):
+    try:
+        with db_connect() as conn:
+            conn.execute("INSERT INTO analytics_events (user_id,event,feature,source,value,created_at) VALUES (?,?,?,?,?,?)",
+                         (user_id,event,feature,source,str(value)[:500],datetime.now().isoformat()))
+    except Exception as e:
+        logging.error(f"analytics: {e}")
+
+def mark_update(update_key):
+    if not update_key:
+        return True
+    try:
+        with db_connect() as conn:
+            conn.execute("INSERT INTO processed_updates (update_key,processed_at) VALUES (?,?)", (update_key,datetime.now().isoformat()))
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+def save_profile(user_id, birth_date=None, source=None, referrer_id=None, stopped=None):
+    with db_connect() as conn:
+        conn.execute("INSERT OR IGNORE INTO user_profiles (user_id) VALUES (?)", (user_id,))
+        if birth_date: conn.execute("UPDATE user_profiles SET birth_date=? WHERE user_id=?", (birth_date,user_id))
+        if source: conn.execute("UPDATE user_profiles SET source=? WHERE user_id=?", (source,user_id))
+        if referrer_id and referrer_id != user_id: conn.execute("UPDATE user_profiles SET referrer_id=COALESCE(referrer_id,?) WHERE user_id=?", (referrer_id,user_id))
+        if stopped is not None: conn.execute("UPDATE user_profiles SET stopped=? WHERE user_id=?", (int(stopped),user_id))
+
+def extract_birth_date(text):
+    m=re.search(r"\b(0?[1-9]|[12]\d|3[01])[.\-/](0?[1-9]|1[0-2])[.\-/]((?:19|20)\d{2})\b", text or "")
+    if not m: return None
+    try:
+        d=datetime(int(m.group(3)),int(m.group(2)),int(m.group(1)))
+        return d.strftime("%d.%m.%Y")
+    except ValueError: return None
+
+def deep_link(payload):
+    return f"{BOT_LINK}?start={payload[:128]}"
+
+def get_profile_text(user_id):
+    plan,end=get_subscription(user_id); lim=get_limits(user_id)
+    with db_connect() as conn:
+        row=conn.execute("SELECT birth_date,source FROM user_profiles WHERE user_id=?",(user_id,)).fetchone()
+    birth=row[0] if row else ""
+    plan_name={"aura_start":"🟢 Аура Старт","aura_pro":"🔥 Аура Про"}.get(plan,"Бесплатный")
+    until=f" до {end.strftime('%d.%m.%Y')}" if end else ""
+    return (f"👤 Твой профиль\n\nТариф: {plan_name}{until}\nДата рождения: {birth or 'не указана'}\n"
+            f"Бесплатных разборов использовано: {lim['requests']} из {FREE_REQUESTS}\n"
+            f"Сообщений психологу: {lim['psycho']}\n\nДата рождения сохраняется после первого персонального разбора.")
+
+def referral_buttons(user_id):
+    link=deep_link(f"ref_{user_id}")
+    share=f"https://max.ru/:share?text={quote('Попробуй AuraMAX — личные разборы, Таро и AI-психолог: '+link)}"
+    return [[{"type":"link","text":"📨 Поделиться","url":share}], [{"type":"callback","text":"🔙 В меню","payload":"back_menu"}]]
 
 # ========== ОБРАБОТКА СООБЩЕНИЙ ==========
-WELCOME_TEXT = """🔮 Привет, {name}!
+WELCOME_TEXT = """🔮 {name}, добро пожаловать в AuraMAX.
 
-Я AuraBot — эзотерик и психолог в одном. Уже чувствую твою энергию 👀
+Я помогу получить не общий текст, а личную подсказку под твою ситуацию: отношения, деньги, предназначение или внутреннее состояние.
 
-Что умею:
-🔢 Нумерология, 🃏 Таро, 💤 Сны, 🌈 Аура
-🌟 Гороскоп, ❤️ Совместимость
-🧠 AI-Психолог с памятью истории
-📔 Личный дневник голосом
-
-🔥 На тарифе Про:
-🌌 Матрица судьбы, ♈ Натальная карта
-📅 Прогноз, 💰 Денежный код
-🖐 Хиромантия, 😊 Физиогномика, ✍️ Графология
-👫 Совместимость по фото, 🃏 Таро по фото карт
-⭐️ Персональный гороскоп по дате рождения каждое утро
-
-🌙 Всем каждое утро: лунный календарь
-
-🎁 Бесплатно: 15 запросов + 20 сообщений психологу"""
+🎁 Начни с бесплатного разбора — выбери, что волнует тебя сейчас."""
 
 async def handle_limit_msg(chat_id, access):
     if access == "limit_free":
-        await send_message(chat_id, "🚫 Бесплатные запросы закончились (15 из 15).\n\nОформи подписку:", upgrade_buttons())
+        await send_message(chat_id, "🚫 Бесплатные разборы закончились (5 из 5).\n\nОформи подписку:", upgrade_buttons())
     elif access == "limit_psycho_free":
         await send_message(chat_id, "🚫 Бесплатные сообщения психологу закончились.\n\nОформи подписку:", upgrade_buttons())
     elif access == "limit_psycho_start":
@@ -580,9 +690,16 @@ async def handle_limit_msg(chat_id, access):
     elif access == "start_block":
         await send_message(chat_id, "🔒 Эта функция доступна только на тарифе 🔥 Про.\n\n390 руб/мес:", upgrade_buttons("start"))
 
+
+def looks_like_crisis(text):
+    t=(text or "").lower()
+    markers=("не хочу жить","покончить с собой","суицид","убить себя","причинить себе вред","навредить себе","убить его","убить её")
+    return any(x in t for x in markers)
+
 async def process_command(chat_id, user_id, text, username="", first_name=""):
     get_user(user_id, username, first_name)
     name = first_name or "друг"
+    log_event(user_id, "message", value=text[:100])
 
     if text in ("/start", "start"):
         set_step(user_id, "idle")
@@ -595,6 +712,15 @@ async def process_command(chat_id, user_id, text, username="", first_name=""):
     step = user.get("step", "")
 
     # Обработка шагов
+    if step == "my_day_birth":
+        birth=extract_birth_date(text)
+        if not birth:
+            await send_message(chat_id,"Не смогла распознать дату. Напиши, например: 15.03.1990",back_button()); return
+        save_profile(user_id,birth_date=birth)
+        with db_connect() as conn: conn.execute("UPDATE users SET birth_date=? WHERE user_id=?",(birth,user_id))
+        set_step(user_id,"idle")
+        result=await generate_text(HOROSCOPE_SYSTEM,f"Дата рождения: {birth}. Сегодня {datetime.now(MOSCOW).strftime('%d.%m.%Y')}. Дай персональную подсказку: энергия дня, отношения, деньги, главное действие и вечерняя практика. Не обещай неизбежных событий.")
+        await send_message(chat_id,"🌟 Твой день\n\n"+result,back_button()); return
     if step == "review":
         set_step(user_id, "idle")
         save_review(user_id, username, first_name, text)
@@ -619,6 +745,9 @@ async def process_command(chat_id, user_id, text, username="", first_name=""):
         return
 
     if step == "psycho":
+        if looks_like_crisis(text):
+            await send_message(chat_id, "Мне очень жаль, что тебе сейчас настолько тяжело. Я не заменяю экстренную помощь. Если есть риск, что ты можешь навредить себе или другому человеку, прямо сейчас позвони 112 или обратись к человеку рядом, которому доверяешь. Постарайся не оставаться в одиночестве и убери подальше всё, чем можно причинить вред. Напиши одним словом: ты сейчас в непосредственной опасности — да или нет?", psycho_buttons())
+            log_event(user_id,"crisis_message"); return
         access = await check_access(user_id, "psycho")
         if access not in ("ok", "pro"):
             await handle_limit_msg(chat_id, access)
@@ -646,6 +775,11 @@ async def process_command(chat_id, user_id, text, username="", first_name=""):
     }
 
     if step in step_map:
+        birth = extract_birth_date(text)
+        if birth:
+            save_profile(user_id, birth_date=birth)
+            with db_connect() as conn:
+                conn.execute("UPDATE users SET birth_date=? WHERE user_id=?", (birth,user_id))
         feature = step if step in ("matrix", "forecast", "natal", "money_code", "taro_photo", "compat_photo") else "general"
         access = await check_access(user_id, feature)
         if access not in ("ok", "pro"):
@@ -666,6 +800,25 @@ async def process_command(chat_id, user_id, text, username="", first_name=""):
 async def process_callback(chat_id, user_id, payload, first_name=""):
     get_user(user_id, "", first_name)
 
+    log_event(user_id, "callback", feature=payload)
+    if payload.startswith("cat_"):
+        cat=payload.split("_",1)[1]
+        titles={"situation":"🔮 Разобрать ситуацию","love":"❤️ Отношения","money":"💰 Деньги и предназначение","self":"✨ Узнать себя"}
+        await send_message(chat_id, titles.get(cat,"Выбери направление"), category_buttons(cat)); return
+    if payload == "profile":
+        await send_message(chat_id, get_profile_text(user_id), back_button()); return
+    if payload == "referral":
+        await send_message(chat_id, "🎁 Пригласи близкого человека\n\nОн получит 3 дополнительных бесплатных разбора, а после его первой оплаты тебе начислят 30 дней Аура Про.\n\nНажми кнопку и отправь приглашение.", referral_buttons(user_id)); return
+    if payload == "my_day":
+        with db_connect() as conn:
+            row=conn.execute("SELECT birth_date FROM user_profiles WHERE user_id=?",(user_id,)).fetchone()
+        birth=row[0] if row else ""
+        if not birth:
+            set_step(user_id,"my_day_birth")
+            await send_message(chat_id,"🌟 Мой день\n\nВведи дату рождения в формате ДД.ММ.ГГГГ — я сохраню её и подготовлю личную подсказку.",back_button()); return
+        await send_message(chat_id,"⏳ Собираю личную подсказку...")
+        result=await generate_text(HOROSCOPE_SYSTEM, f"Дата рождения: {birth}. Сегодня {datetime.now(MOSCOW).strftime('%d.%m.%Y')}. Дай персональную подсказку: энергия дня, отношения, деньги, главное действие и короткая вечерняя практика. Не обещай неизбежных событий.")
+        await send_message(chat_id,"🌟 Твой день\n\n"+result,back_button()); return
     if payload == "noop":
         return
 
@@ -701,24 +854,26 @@ async def process_callback(chat_id, user_id, payload, first_name=""):
             f"Денежный код, все фото-анализы\n"
             f"Персональный гороскоп каждое утро\n\n"
             f"🌙 Всем бесплатно: лунный календарь каждое утро\n\n"
-            f"🎁 Бесплатно: 15 запросов + 30 сообщений психологу{current}",
+            f"🎁 Бесплатно: 5 разборов + 15 сообщений психологу{current}",
             [
                 [{"type": "callback", "text": "🟢 Старт — 190 руб", "payload": "pay_start"}],
                 [{"type": "callback", "text": "🔥 Про — 390 руб", "payload": "pay_pro"}],
+                [{"type": "callback", "text": "💜 Про на год — 2 990 руб", "payload": "pay_year"}],
                 [{"type": "callback", "text": "🔙 В меню", "payload": "back_menu"}]
             ]
         )
         return
 
-    if payload in ("pay_start", "pay_pro"):
-        plan = "aura_start" if payload == "pay_start" else "aura_pro"
+    if payload in ("pay_start", "pay_pro", "pay_year"):
+        plan = {"pay_start":"aura_start", "pay_pro":"aura_pro", "pay_year":"aura_pro_year"}[payload]
         try:
             payment = await create_payment(user_id, plan)
             pay_url = payment.get("confirmation", {}).get("confirmation_url", "")
             payment_id = payment.get("id", "")
             if pay_url and payment_id:
                 save_pending_payment(payment_id, user_id, plan)
-                plan_name = "Старт 190 руб" if plan == "aura_start" else "Про 390 руб"
+                log_event(user_id, "payment_created", feature=plan, value=payment_id)
+                plan_name = {"aura_start":"Старт 190 руб", "aura_pro":"Про 390 руб", "aura_pro_year":"Про на год 2 990 руб"}[plan]
                 await send_message(chat_id,
                     f"💳 Оплата тарифа {plan_name}\n\nНажми кнопку для оплаты.\nПодписка активируется автоматически! ✅",
                     [[{"type": "link", "text": f"💳 Оплатить", "url": pay_url}],
@@ -751,7 +906,7 @@ async def process_callback(chat_id, user_id, payload, first_name=""):
     }
 
     pro_features = ("matrix", "forecast", "natal", "money_code", "taro_photo", "compat_photo")
-    photo_features = ("chiromancy", "physio", "grapho")
+    photo_features = ("aura_photo", "chiromancy", "physio", "grapho")
 
     if payload == "psycho":
         access = await check_access(user_id, "psycho")
@@ -790,6 +945,7 @@ async def process_callback(chat_id, user_id, payload, first_name=""):
             return
         set_step(user_id, payload)
         photo_msgs = {
+            "aura_photo": "🔮 Символический анализ ауры по фото\n\nПришли своё фото при хорошем естественном освещении, без фильтров. Разбор носит развлекательный и рефлексивный характер.",
             "chiromancy": "🖐 Хиромантия\n\nПришли фото ладони:\n— Хорошее освещение\n— Ладонь вверх, пальцы расслаблены\n— Лучше правая рука",
             "physio": "😊 Физиогномика\n\nПришли фото лица:\n— Анфас, прямо в камеру\n— Хорошее освещение\n— Без фильтров",
             "grapho": "✍️ Графология\n\nНапиши от руки 5-7 предложений и пришли фото:\n— Пиши как обычно\n— Хорошее освещение",
@@ -841,6 +997,7 @@ async def process_photo(chat_id, user_id, photo_url):
     step = user.get("step", "")
 
     photo_steps = {
+        "aura_photo": (AURA_SYSTEM + " Анализ символический и рефлексивный; не утверждай, что измеряешь реальную энергию.", "aura_photo", "requests"),
         "chiromancy": (CHIROMANCY_SYSTEM, "chiromancy", "photo_chiromancy"),
         "physio": (PHYSIO_SYSTEM, "physio", "photo_physio"),
         "grapho": (GRAPHO_SYSTEM, "grapho", "photo_grapho"),
@@ -881,92 +1038,71 @@ app = FastAPI()
 @app.on_event("startup")
 async def startup():
     init_db()
-    headers = {"Authorization": MAX_TOKEN, "Content-Type": "application/json"}
+    headers={"Authorization":MAX_TOKEN,"Content-Type":"application/json"}
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.post(f"{MAX_API}/subscriptions",
-                json={"url": WEBHOOK_URL}, headers=headers)
-            logging.info(f"Webhook регистрация: {r.json()}")
-    except Exception as e:
-        logging.error(f"Ошибка регистрации webhook: {e}")
+        async with httpx.AsyncClient(timeout=15) as client:
+            r=await client.post(f"{MAX_API}/subscriptions", json={"url":WEBHOOK_URL,"update_types":["message_created","message_callback","bot_started","bot_stopped"]}, headers=headers)
+            logging.info(f"Webhook регистрация: {r.status_code} {r.text[:300]}")
+    except Exception as e: logging.error(f"Webhook registration: {e}")
+    for _ in range(3): asyncio.create_task(update_worker())
     asyncio.create_task(check_payments_loop())
     asyncio.create_task(channel_posting_loop())
-    logging.info("Aura MAX Bot запущен!")
     asyncio.create_task(daily_loop())
-    logging.info("Aura MAX Bot запущен!")
+    logging.info("Aura MAX Bot запущен")
 
 @app.post("/webhook")
 async def webhook(request: Request):
     try:
-        data = await request.json()
-        logging.info(f"MAX webhook: {data}")
-
-        update_type = data.get("update_type", "")
-        message = data.get("message", {})
-        callback = data.get("callback", {})
-
-        if update_type == "bot_started":
-            user = data.get("user", {})
-            chat_id = user.get("user_id")
-            user_id = chat_id
-            first_name = user.get("name", "друг")
-            username = user.get("username", "")
-            get_user(user_id, username, first_name)
-            set_step(user_id, "idle")
-            plan, _ = get_subscription(user_id)
-            asyncio.create_task(asyncio.to_thread(sheets_log_visit, user_id, first_name, username, plan))
-            await send_message(chat_id, WELCOME_TEXT.format(name=first_name), main_menu_buttons())
-
-        elif update_type == "message_created":
-            sender = message.get("sender", {})
-            chat_id = message.get("recipient", {}).get("chat_id")
-            user_id = sender.get("user_id")
-            first_name = sender.get("name", "друг")
-            username = sender.get("username", "")
-            body = message.get("body", {})
-            text = body.get("text", "")
-            attachments = body.get("attachments", [])
-
-            if attachments:
-                for att in attachments:
-                    if att.get("type") == "image":
-                        payload_data = att.get("payload", {})
-                        photo_url = (
-                            payload_data.get("url") or
-                            payload_data.get("photo_url") or
-                            (payload_data.get("photos", [{}])[0].get("url") if payload_data.get("photos") else None)
-                        )
-                        logging.info(f"Фото payload: {payload_data}")
-                        if photo_url:
-                            await process_photo(chat_id, user_id, photo_url)
-                            return JSONResponse({"ok": True})
-                        else:
-                            logging.error(f"Не найден URL фото: {payload_data}")
-
-            if text:
-                await process_command(chat_id, user_id, text, username, first_name)
-
-        elif update_type == "message_callback":
-            user = callback.get("user", {})
-            recipient = message.get("recipient", {})
-            chat_id = (
-                recipient.get("chat_id") or
-                callback.get("chat_id") or
-                message.get("sender", {}).get("chat_id")
-            )
-            user_id = user.get("user_id")
-            first_name = user.get("name", "друг")
-            payload = callback.get("payload", "")
-            logging.info(f"CALLBACK: chat_id={chat_id} user_id={user_id} payload={payload}")
-            if chat_id and payload:
-                await process_callback(chat_id, user_id, payload, first_name)
-            else:
-                logging.error(f"Нет chat_id в callback: {data}")
-
+        data=await request.json()
+        key=str(data.get("timestamp", ""))+":"+data.get("update_type","")+":"+str(data.get("message",{}).get("body",{}).get("mid",data.get("callback",{}).get("callback_id","")))
+        if not mark_update(key): return JSONResponse({"ok":True,"duplicate":True})
+        try: UPDATE_QUEUE.put_nowait(data)
+        except asyncio.QueueFull:
+            logging.error("Update queue full")
+            return JSONResponse({"ok":False},status_code=503)
     except Exception as e:
-        logging.error(f"Webhook error: {e}")
+        logging.error(f"Webhook parse error: {e}")
+    return JSONResponse({"ok":True})
 
-    return JSONResponse({"ok": True})
+async def update_worker():
+    while True:
+        data=await UPDATE_QUEUE.get()
+        try: await handle_update(data)
+        except Exception as e: logging.exception(f"Worker error: {e}")
+        finally: UPDATE_QUEUE.task_done()
+
+async def handle_update(data):
+    update_type=data.get("update_type",""); message=data.get("message",{}); callback=data.get("callback",{})
+    if update_type=="bot_started":
+        user=data.get("user",{}); chat_id=data.get("chat_id") or user.get("user_id"); user_id=user.get("user_id") or chat_id
+        first_name=user.get("name","друг"); username=user.get("username",""); payload=data.get("payload") or "direct"
+        get_user(user_id,username,first_name); set_step(user_id,"idle"); save_profile(user_id,source=payload,stopped=False)
+        if payload.startswith("ref_"):
+            try: save_profile(user_id,referrer_id=int(payload.split("_",1)[1]))
+            except Exception: pass
+        log_event(user_id,"bot_started",source=payload)
+        asyncio.create_task(asyncio.to_thread(sheets_log_visit,user_id,first_name,username,get_subscription(user_id)[0]))
+        routes={"channel_taro":"taro","channel_money":"money_code","channel_psycho":"psycho","channel_love":"compatibility","channel_self":"numerology","channel_day":"my_day"}
+        target=routes.get(payload)
+        if target:
+            await send_message(chat_id,WELCOME_TEXT.format(name=first_name),main_menu_buttons())
+            await process_callback(chat_id,user_id,target,first_name)
+        else: await send_message(chat_id,WELCOME_TEXT.format(name=first_name),main_menu_buttons())
+    elif update_type=="bot_stopped":
+        user=data.get("user",{}); uid=user.get("user_id") or data.get("chat_id")
+        if uid: save_profile(uid,stopped=True); log_event(uid,"bot_stopped")
+    elif update_type=="message_created":
+        sender=message.get("sender",{}); chat_id=message.get("recipient",{}).get("chat_id") or data.get("chat_id")
+        uid=sender.get("user_id"); body=message.get("body",{}); text=body.get("text",""); attachments=body.get("attachments",[])
+        for att in attachments:
+            if att.get("type")=="image":
+                pd=att.get("payload",{}); url=pd.get("url") or pd.get("photo_url") or ((pd.get("photos") or [{}])[0].get("url"))
+                if url: await process_photo(chat_id,uid,url); return
+        if text: await process_command(chat_id,uid,text,sender.get("username",""),sender.get("name","друг"))
+    elif update_type=="message_callback":
+        user=callback.get("user",{}); uid=user.get("user_id"); chat_id=message.get("recipient",{}).get("chat_id") or callback.get("chat_id") or data.get("chat_id")
+        payload=callback.get("payload","")
+        if chat_id and payload: await process_callback(chat_id,uid,payload,user.get("name","друг"))
 
 @app.get("/payment/success")
 async def payment_success():
@@ -1107,136 +1243,75 @@ async def send_to_channel(text):
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(f"{MAX_API}/messages?chat_id={MAX_CHANNEL_ID}", json=payload, headers=headers)
         logging.info(f"Канал MAX: {r.status_code}")
+        if r.status_code >= 400:
+            raise RuntimeError(f"MAX channel error {r.status_code}: {r.text[:500]}")
+
+CHANNEL_SLOTS = {
+    (9,0): "morning", (13,0): "value", (20,0): "evening"
+}
+
+def channel_slot_key(dt, rubric): return f"{dt.strftime('%Y-%m-%d')}_{rubric}"
+
+def channel_was_sent(key):
+    with db_connect() as conn: return bool(conn.execute("SELECT 1 FROM channel_posts WHERE slot_key=? AND status='sent'",(key,)).fetchone())
+
+def save_channel_post(key,rubric,content,status):
+    with db_connect() as conn:
+        conn.execute("INSERT INTO channel_posts(slot_key,rubric,content,status,published_at) VALUES(?,?,?,?,?) ON CONFLICT(slot_key) DO UPDATE SET content=excluded.content,status=excluded.status,published_at=excluded.published_at",
+                     (key,rubric,content,status,datetime.now().isoformat()))
+
+def recent_channel_topics(rubric,limit=10):
+    with db_connect() as conn: rows=conn.execute("SELECT content FROM channel_posts WHERE rubric=? AND status='sent' ORDER BY id DESC LIMIT ?",(rubric,limit)).fetchall()
+    return "\n---\n".join(r[0][:250] for r in rows)
+
+async def publish_channel_slot(dt,rubric):
+    key=channel_slot_key(dt,rubric)
+    if channel_was_sent(key): return
+    today=dt.strftime('%d.%m.%Y'); recent=recent_channel_topics(rubric)
+    weekday=dt.weekday()
+    if rubric=="morning":
+        theme=["отношения","деньги","уверенность","интуиция","энергия","границы","новые решения"][weekday]
+        text=await generate_text(CHANNEL_SYSTEM_MORNING,f"Дата {today}. Тема дня: {theme}. Напиши короткий цепляющий пост: узнаваемая мысль, одна конкретная практика и вопрос подписчику. Не повторяй недавнее: {recent}")
+        cta=f"\n\n✨ Получить личную подсказку на сегодня → {deep_link('channel_day')}"
+        title="🌅 Настрой на день"
+    elif rubric=="value":
+        systems=[CHANNEL_SYSTEM_PSYCHO,CHANNEL_SYSTEM_MONEY,CHANNEL_SYSTEM_PSYCHO,CHANNEL_SYSTEM_REVIEW,CHANNEL_SYSTEM_DREAMS,CHANNEL_SYSTEM_PSYCHO,CHANNEL_SYSTEM_POLL]
+        prompts=["границы и самоценность","денежные привычки без магических обещаний","тревога и опора на себя","покажи одну функцию бота честно, без выдуманного отзыва","символы снов как повод для рефлексии","отношения и уважение к себе","мини-тест с расшифровкой"]
+        text=await generate_text(systems[weekday],f"Сегодня {today}. Тема: {prompts[weekday]}. Дай практическую ценность, без ложных гарантий. Не повторяй недавнее: {recent}")
+        payload=["channel_self","channel_money","channel_psycho","channel_self","channel_taro","channel_love","channel_taro"][weekday]
+        cta=f"\n\n🔮 Продолжить с личным разбором → {deep_link(payload)}"
+        title=["🧠 Практика недели","💰 Деньги и внутренние опоры","🧠 Психология без сложных слов","✨ Как работает AuraMAX","🌙 Язык снов","❤️ Отношения с собой","🃏 Мини-тест"][weekday]
+    else:
+        text=await generate_text(CHANNEL_SYSTEM_EVENING,f"Сегодня {today}. Сделай мягкую вечернюю практику на 2-4 минуты и один вопрос для дневника. Не повторяй недавнее: {recent}")
+        cta=f"\n\n📔 Сохранить мысли в личном дневнике → {deep_link('channel_psycho')}"
+        title="🌙 Вечерняя перезагрузка"
+    content=f"{title}\n\n{text}{cta}"
+    try:
+        await send_to_channel(content); save_channel_post(key,rubric,content,"sent")
+    except Exception:
+        save_channel_post(key,rubric,content,"failed"); raise
 
 async def channel_posting_loop():
+    await asyncio.sleep(5)
     while True:
-        now = datetime.utcnow()
-
-        # Утренний пост в 9:00 МСК = 6:00 UTC
-        next_morning = now.replace(hour=6, minute=0, second=0, microsecond=0)
-        if now >= next_morning:
-            next_morning += timedelta(days=1)
-
-        # Карта Таро в 12:00 МСК = 9:00 UTC
-        next_taro = now.replace(hour=9, minute=0, second=0, microsecond=0)
-        if now >= next_taro:
-            next_taro += timedelta(days=1)
-
-        # Дневной совет психолога в 13:00 МСК = 10:00 UTC
-        next_noon = now.replace(hour=10, minute=0, second=0, microsecond=0)
-        if now >= next_noon:
-            next_noon += timedelta(days=1)
-
-        # Бонусный пост в 18:00 МСК = 15:00 UTC
-        next_bonus = now.replace(hour=15, minute=0, second=0, microsecond=0)
-        if now >= next_bonus:
-            next_bonus += timedelta(days=1)
-
-        # Вечерний пост в 20:00 МСК = 17:00 UTC
-        next_evening = now.replace(hour=17, minute=0, second=0, microsecond=0)
-        if now >= next_evening:
-            next_evening += timedelta(days=1)
-
-        next_event = min(next_morning, next_taro, next_noon, next_bonus, next_evening)
-        wait_seconds = (next_event - now).total_seconds()
-        await asyncio.sleep(wait_seconds)
-
-        now = datetime.utcnow()
-        today = now.strftime("%d.%m.%Y")
-        weekday = now.weekday()  # 0=пн, 1=вт, 2=ср, 3=чт, 4=пт, 5=сб, 6=вс
-
+        now=datetime.now(MOSCOW)
         try:
-            if now.hour == 6:
-                # Утренний пост
-                text = await generate_text(
-                    CHANNEL_SYSTEM_MORNING,
-                    f"Сегодня {today}. Напиши утренний вдохновляющий пост. Выбери тему которая ещё не использовалась недавно."
-                )
-                await send_to_channel(f"🌅 Доброе утро!\n\n{text}")
-                await asyncio.sleep(30)
-                # Гороскоп на день
-                horoscope = await generate_text(
-                    CHANNEL_SYSTEM_HOROSCOPE,
-                    f"Сегодня {today}. Напиши краткий гороскоп на день для всех 12 знаков. Выбери тему дня (работа/отношения/деньги/здоровье/творчество) и придерживайся её."
-                )
-                await send_to_channel(f"⭐️ Гороскоп на {today}\n\n{horoscope}")
-
-            elif now.hour == 9:
-                taro = await generate_text(
-                    CHANNEL_SYSTEM_TARO,
-                    f"Сегодня {today}. Вытяни карту Таро дня и объясни её значение. Выбери карту которая ещё не была недавно."
-                )
-                await send_to_channel(f"🃏 Карта дня — {today}\n\n{taro}")
-
-            elif now.hour == 10:
-                text = await generate_text(
-                    CHANNEL_SYSTEM_PSYCHO,
-                    f"Сегодня {today}. Напиши совет психолога. Выбери тему которая ещё не использовалась недавно."
-                )
-                await send_to_channel(f"🧠 Совет психолога\n\n{text}")
-
-            elif now.hour == 15:
-                # Бонусный пост — ротация по дням недели
-                # 0=пн: лунный календарь, 1=вт: деньги, 2=ср: аффирмации
-                # 3=чт: отзыв/бот, 4=пт: сны/символы, 5=сб: бот/продажи, 6=вс: голосование
-                if weekday == 0:
-                    text = await generate_text(
-                        CHANNEL_SYSTEM_LUNAR,
-                        f"Сегодня {today}, начало недели. Напиши пост о лунном календаре на эту неделю."
-                    )
-                    await send_to_channel(f"🌙 Лунный календарь недели\n\n{text}")
-
-                elif weekday == 1:
-                    text = await generate_text(
-                        CHANNEL_SYSTEM_MONEY,
-                        f"Сегодня {today}. Напиши пост о деньгах и энергетике. Выбери новую тему."
-                    )
-                    await send_to_channel(f"💰 Деньги и энергетика\n\n{text}")
-
-                elif weekday == 2:
-                    text = await generate_text(
-                        CHANNEL_SYSTEM_AFFIRMATION,
-                        f"Сегодня {today}. Напиши аффирмации на каждый день недели. Выбери новую тему."
-                    )
-                    await send_to_channel(f"✨ Аффирмации недели\n\n{text}")
-
-                elif weekday == 3:
-                    text = await generate_text(
-                        CHANNEL_SYSTEM_REVIEW,
-                        f"Сегодня {today}. Напиши пост о возможностях бота от лица пользователя. Выбери одну функцию."
-                    )
-                    await send_to_channel(f"🔮 Твой личный наставник\n\n{text}")
-
-                elif weekday == 4:
-                    text = await generate_text(
-                        CHANNEL_SYSTEM_DREAMS,
-                        f"Сегодня {today}. Напиши пост о символах и знаках. Выбери новую тему."
-                    )
-                    await send_to_channel(f"🌟 Знаки и символы\n\n{text}")
-
-                elif weekday == 5:
-                    text = await generate_text(
-                        CHANNEL_SYSTEM_REVIEW,
-                        f"Сегодня {today}. Напиши пост о боте — как будто делишься личным опытом. Другая функция чем в четверг."
-                    )
-                    await send_to_channel(f"💫 Делюсь опытом\n\n{text}")
-
-                elif weekday == 6:
-                    text = await generate_text(
-                        CHANNEL_SYSTEM_POLL,
-                        f"Сегодня {today}, воскресенье. Напиши вовлекающий вопрос или мини-тест для подписчиков."
-                    )
-                    await send_to_channel(f"🗳 А ты как думаешь?\n\n{text}")
-
-            elif now.hour == 17:
-                text = await generate_text(
-                    CHANNEL_SYSTEM_EVENING,
-                    f"Сегодня {today}. Напиши вечерний пост. Выбери тему которая ещё не использовалась недавно."
-                )
-                await send_to_channel(f"🌙 Вечернее\n\n{text}")
-
+            # catch up only today's missed slots, no more than 6 hours late
+            for (h,m),rubric in CHANNEL_SLOTS.items():
+                slot=now.replace(hour=h,minute=m,second=0,microsecond=0)
+                if slot<=now and (now-slot).total_seconds()<=21600:
+                    await publish_channel_slot(slot,rubric)
+            # calculate next slot
+            candidates=[]
+            for (h,m),rubric in CHANNEL_SLOTS.items():
+                d=now.replace(hour=h,minute=m,second=0,microsecond=0)
+                if d<=now: d+=timedelta(days=1)
+                candidates.append((d,rubric))
+            nxt,rubric=min(candidates,key=lambda x:x[0])
+            await asyncio.sleep(max(1,(nxt-now).total_seconds()))
+            await publish_channel_slot(nxt,rubric)
         except Exception as e:
-            logging.error(f"Ошибка рассылки в MAX канал: {e}")
+            logging.exception(f"Channel loop: {e}"); await asyncio.sleep(60)
 
 # ========== MAIN ==========
 async def main():
