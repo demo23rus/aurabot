@@ -1100,19 +1100,18 @@ async def process_start_payload(message: Message):
             "channel_money": "money_code",
             "channel_psycho": "psycho",
             "channel_horoscope": "my_day",
+            "channel_day": "my_day",
             "channel_dreams": "dreams",
             "channel_matrix": "matrix",
+            "channel_forecast": "forecast",
             "channel_love": "compatibility",
             "channel_self": "numerology",
+            "channel_diary": "diary",
         }
         target = source_map.get(payload)
         if target:
-            await send_message(
-                message.chat.id,
-                "Ты пришла за персональным продолжением. Начнём сразу 👇",
-                [[{"type":"callback","text":"✨ Получить личный разбор","payload":target}],
-                 [{"type":"callback","text":"🔙 Главное меню","payload":"back_menu"}]]
-            )
+            log_event(user_id, "channel_entry", feature=target, source=payload)
+            await process_callback(message.chat.id, user_id, target, first_name)
             return
 
     await send_message(
@@ -1149,6 +1148,17 @@ async def cmd_activate(message: Message):
         await message.answer(f"✅ {plan} активирован для {target} на {days} дней.")
     except Exception as exc:
         await message.answer(f"Ошибка: {exc}")
+
+@dp.message(Command("publish_channel_intro"))
+async def cmd_publish_channel_intro(message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+    ok = await publish_channel_intro()
+    await message.answer(
+        "✅ Продающий пост опубликован. Теперь закрепи его в канале."
+        if ok else
+        "❌ Не удалось опубликовать пост. Проверь журнал сервиса."
+    )
 
 @dp.callback_query()
 async def callback_router(callback: CallbackQuery):
@@ -1220,182 +1230,187 @@ async def text_router(message: Message):
         message.from_user.first_name or ""
     )
 
-# ========== КАНАЛ TELEGRAM ==========
+# ========== КАНАЛ TELEGRAM — PREMIUM FUNNEL ==========
 
-CHANNEL_SYSTEM_MORNING = """Ты — мудрый эзотерик и духовный наставник канала Аура — Психология.
-Пишешь вдохновляющий утренний пост. Каждый раз выбирай НОВУЮ тему — не повторяй предыдущие.
-Темы для ротации: энергия дня, лунный день, цвет дня, число дня, архетип дня, стихия дня, послание вселенной.
-Пост: начинается с красивого эмодзи, содержит мудрость или цитату, даёт энергию на день.
-Стиль: тёплый, вдохновляющий. 3-4 предложения. Только на русском. Без хэштегов."""
+CHANNEL_EDITOR_SYSTEM = """Ты главный редактор премиального канала «Аура — Психология».
+Канал сочетает практическую психологию, бережное самопознание и символические практики.
+Пиши живо, конкретно и современно. Не используй дешёвую мистику, запугивание, фатальные обещания, выдуманные отзывы и гарантии результата.
+Каждый пост должен дать узнавание, одну практическую пользу и естественно подвести к персональному продолжению в боте.
+Не добавляй ссылки, хэштеги и фразы «перейди по ссылке» — нативную кнопку добавит программа.
+Короткие абзацы, только русский язык."""
 
-CHANNEL_SYSTEM_HOROSCOPE = """Ты — профессиональный астролог канала Аура — Психология.
-Пишешь краткий гороскоп на сегодня для всех 12 знаков зодиака.
-Для каждого знака: 1-2 предложения — конкретный совет или прогноз на день.
-Каждый день РАЗНЫЕ темы: работа, отношения, деньги, здоровье, интуиция, творчество — чередуй.
-Формат строго такой:
-♈ Овен — [текст]
-♉ Телец — [текст]
-♊ Близнецы — [текст]
-♋ Рак — [текст]
-♌ Лев — [текст]
-♍ Дева — [текст]
-♎ Весы — [текст]
-♏ Скорпион — [текст]
-♐ Стрелец — [текст]
-♑ Козерог — [текст]
-♒ Водолей — [текст]
-♓ Рыбы — [текст]
-Только на русском. Без хэштегов."""
+CHANNEL_SLOTS = {(9, 0): "morning", (13, 0): "value", (20, 0): "evening"}
 
-CHANNEL_SYSTEM_PSYCHO = """Ты — опытный психолог и коуч канала Аура — Психология.
-Пишешь развёрнутый дневной совет. Каждый раз НОВАЯ тема — не повторяй предыдущие.
-Темы для ротации: границы в общении, работа со страхами, самооценка, токсичные отношения, 
-выгорание, принятие себя, детские травмы, тревожность, одиночество, прокрастинация, обиды, ревность.
-Совет: практичный, жизненный, с конкретным упражнением на сегодня.
-Стиль: профессиональный но тёплый. 6-8 предложений. Без хэштегов."""
+WEEKLY_FUNNEL = {
+    0: {"theme": "внутреннее состояние и планы недели", "morning": ("🌟 Получить личный прогноз", "channel_day"), "value": ("🧠 Разобраться в своём состоянии", "channel_psycho"), "evening": ("📔 Подвести итоги дня", "channel_diary")},
+    1: {"theme": "деньги, самоценность и реализация", "morning": ("💰 Узнать денежный сценарий", "channel_money"), "value": ("💰 Рассчитать денежный код", "channel_money"), "evening": ("🌟 Получить подсказку на день", "channel_day")},
+    2: {"theme": "отношения, границы и близость", "morning": ("❤️ Посмотреть совместимость", "channel_love"), "value": ("❤️ Разобраться в отношениях", "channel_love"), "evening": ("🃏 Задать вопрос картам", "channel_taro")},
+    3: {"theme": "тревога, усталость и опора на себя", "morning": ("🧠 Поговорить с психологом", "channel_psycho"), "value": ("🧠 Разложить ситуацию по полочкам", "channel_psycho"), "evening": ("📔 Записать мысли", "channel_diary")},
+    4: {"theme": "Таро, выбор и неопределённость", "morning": ("🃏 Получить личный расклад", "channel_taro"), "value": ("🔮 Задать свой вопрос", "channel_taro"), "evening": ("🌙 Разобрать сон", "channel_dreams")},
+    5: {"theme": "самопознание, сильные стороны и предназначение", "morning": ("🔢 Получить личный разбор", "channel_self"), "value": ("🌌 Открыть Матрицу судьбы", "channel_matrix"), "evening": ("🔢 Узнать больше о себе", "channel_self")},
+    6: {"theme": "итоги недели, восстановление и новый цикл", "morning": ("📅 Получить прогноз недели", "channel_forecast"), "value": ("📔 Подвести итоги недели", "channel_diary"), "evening": ("🌟 Получить подсказку на завтра", "channel_day")},
+}
 
-CHANNEL_SYSTEM_EVENING = """Ты — мудрый астролог и эзотерик канала Аура — Психология.
-Пишешь вечерний пост. Каждый раз НОВАЯ тема — не повторяй предыдущие.
-Темы для ротации: медитация на ночь, аффирмация, практика благодарности, отпускание дня, 
-лунная энергия, подведение итогов, намерение на завтра, очищение энергии.
-Пост: помогает отпустить день, настраивает на сон, даёт практику.
-Стиль: мягкий, успокаивающий. 4-5 предложений. Без хэштегов."""
+FALLBACK_POSTS = {
+    "morning": """🌅 Вопрос на сегодня
 
-CHANNEL_SYSTEM_TARO = """Ты — профессиональный таролог канала Аура — Психология.
-Каждый день вытягиваешь одну карту Таро и объясняешь её значение на сегодня.
-Каждый день РАЗНАЯ карта — не повторяй карты которые уже были.
-Структура поста:
-— Название карты и её аркан
-— Что эта карта означает сегодня для всех
-— Совет от карты на день
-— Одна короткая аффирмация
-Стиль: мистический, вдохновляющий, конкретный. Без хэштегов. Только на русском."""
+Какое одно состояние ты хочешь сохранить в течение дня — спокойствие, ясность или уверенность?
 
-CHANNEL_SYSTEM_LUNAR = """Ты — астролог и эзотерик канала Аура — Психология.
-Пишешь пост о лунном календаре на текущую неделю.
-Структура:
-— Текущая фаза луны и её влияние
-— Благоприятные дни недели для разных дел (финансы, отношения, начинания, отдых)
-— Главный совет недели от луны
-Стиль: практичный, конкретный, с эмодзи. Без хэштегов. Только на русском.
-В конце добавь: "Сохрани чтобы не потерять 🔖" """
+Перед первым важным делом остановись на десять секунд, сделай медленный вдох и назови про себя своё намерение. Это не решит всё сразу, но поможет действовать не из тревоги, а из выбранной опоры.""",
+    "value": """🧠 Практика, которая возвращает ясность
 
-CHANNEL_SYSTEM_MONEY = """Ты — эзотерик и нумеролог канала Аура — Психология.
-Пишешь пост о деньгах и энергетике для разных знаков зодиака или типов людей.
-Каждый раз НОВАЯ тема: денежные блоки по знакам, денежные аффирмации, практики привлечения изобилия,
-что мешает деньгам приходить, ритуалы на деньги по лунному календарю.
-Стиль: практичный, вдохновляющий. В конце мягкий призыв узнать личный разбор в боте.
-Только на русском. Без хэштегов."""
+Когда мысли ходят по кругу, раздели лист на три части: «что я знаю точно», «что я предполагаю» и «что я чувствую».
 
-CHANNEL_SYSTEM_AFFIRMATION = """Ты — коуч и эзотерик канала Аура — Психология.
-Пишешь пост с аффирмациями на каждый день недели (7 аффирмаций).
-Каждый раз НОВАЯ тема аффирмаций: любовь к себе, изобилие, здоровье, отношения, уверенность, защита, успех.
-Формат: один эмодзи + день недели + аффирмация.
-В конце: "Сохрани и начинай каждое утро с аффирмации своего дня 🌅"
-Только на русском. Без хэштегов."""
+Тревога часто смешивает эти три слоя. Когда они разделены, проще увидеть, где нужны действия, а где — поддержка и время.""",
+    "evening": """🌙 Вечерняя перезагрузка
 
-CHANNEL_SYSTEM_DREAMS = """Ты — эзотерик и толкователь снов канала Аура — Психология.
-Пишешь пост о значении символов во снах или знаках которые посылает вселенная.
-Каждый раз НОВАЯ тема: символы во снах, знаки от вселенной в жизни, совпадения не случайны,
-ангельские числа, знаки что ты на правильном пути.
-Структура: 7-10 символов с кратким объяснением.
-В конце: "Сохрани себе 🔖"
-Только на русском. Без хэштегов."""
+Перед сном назови три вещи: что сегодня получилось, что забрало силы и что можно не нести с собой в завтра.
 
-CHANNEL_SYSTEM_REVIEW = """Ты — администратор канала Аура — Психология.
-Пишешь пост о возможностях личного эзотерического наставника в боте.
-Каждый раз выбирай ОДНУ функцию и раскрой её подробно:
-анализ ауры по фото, карты Таро, персональный гороскоп, нумерология, матрица судьбы, психологическая поддержка.
-Пиши от лица пользователя — как будто делишься опытом ("я попробовала...").
-В конце мягкий призыв попробовать бесплатно.
-Упоминай https://max.ru/id232007136009_bot.
-Стиль: живой, искренний. Без хэштегов. Только на русском."""
+Не оценивай день целиком как хороший или плохой. Один сложный момент не отменяет всего остального.""",
+}
 
-CHANNEL_SYSTEM_POLL = """Ты — администратор канала Аура — Психология.
-Пишешь вовлекающий пост с мини-тестом где расшифровка дана СРАЗУ в том же посте.
-Каждый раз НОВАЯ тема: выбери карту и узнай послание, выбери цвет и узнай свою энергию,
-выбери символ и узнай что тебя ждёт, выбери стихию и узнай свой тип, выбери камень и узнай свою силу.
-Формат строго такой:
-— Вступление с вопросом (1-2 предложения)
-— 3 варианта на выбор с эмодзи
-— Разделитель (например: ✨ Расшифровка ✨)
-— Расшифровка каждого варианта (2-3 предложения на каждый)
-— Финальная фраза с призывом попробовать бота: "Хочешь личный разбор именно для тебя? → https://max.ru/id232007136009_bot"
-Стиль: лёгкий, игривый, мистический. Только на русском. Без хэштегов."""
+def channel_deep_link(payload):
+    return deep_link(payload)
 
-async def send_to_channel(text):
+def native_channel_keyboard(button_text, start_payload):
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=button_text[:64], url=channel_deep_link(start_payload))
+    ]])
+
+async def send_to_channel(text, button_text, start_payload):
     return await bot.send_message(
         CHANNEL_ID,
         text[:4096],
-        disable_web_page_preview=True
+        reply_markup=native_channel_keyboard(button_text, start_payload),
+        disable_web_page_preview=True,
     )
 
-CHANNEL_SLOTS = {
-    (9,0): "morning", (13,0): "value", (20,0): "evening"
-}
-
-def channel_slot_key(dt, rubric): return f"{dt.strftime('%Y-%m-%d')}_{rubric}"
+def channel_slot_key(dt, rubric):
+    return f"{dt.strftime('%Y-%m-%d')}_{rubric}"
 
 def channel_was_sent(key):
-    with db_connect() as conn: return bool(conn.execute("SELECT 1 FROM channel_posts WHERE slot_key=? AND status='sent'",(key,)).fetchone())
-
-def save_channel_post(key,rubric,content,status):
     with db_connect() as conn:
-        conn.execute("INSERT INTO channel_posts(slot_key,rubric,content,status,published_at) VALUES(?,?,?,?,?) ON CONFLICT(slot_key) DO UPDATE SET content=excluded.content,status=excluded.status,published_at=excluded.published_at",
-                     (key,rubric,content,status,datetime.now().isoformat()))
+        return bool(conn.execute(
+            "SELECT 1 FROM channel_posts WHERE slot_key=? AND status='sent'", (key,)
+        ).fetchone())
 
-def recent_channel_topics(rubric,limit=10):
-    with db_connect() as conn: rows=conn.execute("SELECT content FROM channel_posts WHERE rubric=? AND status='sent' ORDER BY id DESC LIMIT ?",(rubric,limit)).fetchall()
-    return "\n---\n".join(r[0][:250] for r in rows)
+def save_channel_post(key, rubric, topic, content, status):
+    with db_connect() as conn:
+        conn.execute(
+            """INSERT INTO channel_posts(slot_key,rubric,topic,content,status,published_at)
+               VALUES(?,?,?,?,?,?)
+               ON CONFLICT(slot_key) DO UPDATE SET
+               rubric=excluded.rubric,
+               topic=excluded.topic,
+               content=excluded.content,
+               status=excluded.status,
+               published_at=excluded.published_at""",
+            (key, rubric, topic[:250], content[:4096], status, datetime.now().isoformat()),
+        )
 
-async def publish_channel_slot(dt,rubric):
-    key=channel_slot_key(dt,rubric)
-    if channel_was_sent(key): return
-    today=dt.strftime('%d.%m.%Y'); recent=recent_channel_topics(rubric)
-    weekday=dt.weekday()
-    if rubric=="morning":
-        theme=["отношения","деньги","уверенность","интуиция","энергия","границы","новые решения"][weekday]
-        text=await generate_text(CHANNEL_SYSTEM_MORNING,f"Дата {today}. Тема дня: {theme}. Напиши короткий цепляющий пост: узнаваемая мысль, одна конкретная практика и вопрос подписчику. Не повторяй недавнее: {recent}")
-        cta=f"\n\n✨ Получить личную подсказку на сегодня → {deep_link('channel_day')}"
-        title="🌅 Настрой на день"
-    elif rubric=="value":
-        systems=[CHANNEL_SYSTEM_PSYCHO,CHANNEL_SYSTEM_MONEY,CHANNEL_SYSTEM_PSYCHO,CHANNEL_SYSTEM_REVIEW,CHANNEL_SYSTEM_DREAMS,CHANNEL_SYSTEM_PSYCHO,CHANNEL_SYSTEM_POLL]
-        prompts=["границы и самоценность","денежные привычки без магических обещаний","тревога и опора на себя","покажи одну функцию бота честно, без выдуманного отзыва","символы снов как повод для рефлексии","отношения и уважение к себе","мини-тест с расшифровкой"]
-        text=await generate_text(systems[weekday],f"Сегодня {today}. Тема: {prompts[weekday]}. Дай практическую ценность, без ложных гарантий. Не повторяй недавнее: {recent}")
-        payload=["channel_self","channel_money","channel_psycho","channel_self","channel_taro","channel_love","channel_taro"][weekday]
-        cta=f"\n\n🔮 Продолжить с личным разбором → {deep_link(payload)}"
-        title=["🧠 Практика недели","💰 Деньги и внутренние опоры","🧠 Психология без сложных слов","✨ Как работает AuraBot","🌙 Язык снов","❤️ Отношения с собой","🃏 Мини-тест"][weekday]
+def recent_channel_topics(limit=24):
+    with db_connect() as conn:
+        rows = conn.execute(
+            "SELECT rubric,topic FROM channel_posts WHERE status='sent' ORDER BY published_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return "\n".join(f"- {rubric}: {topic}" for rubric, topic in rows if topic)
+
+def extract_topic(text):
+    return " ".join((text or "").replace("\n", " ").split())[:220]
+
+def build_channel_prompt(dt, rubric):
+    theme = WEEKLY_FUNNEL[dt.weekday()]["theme"]
+    recent = recent_channel_topics()
+    avoid = f"\nНедавние темы, которые нельзя повторять:\n{recent}" if recent else ""
+    if rubric == "morning":
+        task = f"""Тема дня: {theme}. Напиши утренний пост до 900 знаков.
+Структура: сильная первая строка, узнаваемая мысль, одна практика на 30–60 секунд и вопрос читателю.
+Не составляй общий гороскоп на 12 знаков и не обещай конкретных событий."""
+    elif rubric == "value":
+        task = f"""Тема дня: {theme}. Напиши главный полезный пост до 1700 знаков.
+Начни с жизненной ситуации, в которой читатель узнает себя. Объясни смысл простыми словами.
+Дай 2–3 конкретных шага или вопроса для саморефлексии. Заверши персональным вопросом, который естественно продолжить в боте.
+Не имитируй отзыв пользователя и не обещай магический результат."""
     else:
-        text=await generate_text(CHANNEL_SYSTEM_EVENING,f"Сегодня {today}. Сделай мягкую вечернюю практику на 2-4 минуты и один вопрос для дневника. Не повторяй недавнее: {recent}")
-        cta=f"\n\n📔 Сохранить мысли в личном дневнике → {deep_link('channel_psycho')}"
-        title="🌙 Вечерняя перезагрузка"
-    content=f"{title}\n\n{text}{cta}"
+        task = f"""Тема дня: {theme}. Напиши вечерний пост до 1000 знаков: мягкое завершение дня, практика на 2–4 минуты и один точный вопрос для дневника.
+Избегай абстрактных фраз про свет, потоки энергии и вселенские знаки."""
+    return task + avoid
+
+async def generate_channel_post(dt, rubric):
     try:
-        await send_to_channel(content); save_channel_post(key,rubric,content,"sent")
-    except Exception:
-        save_channel_post(key,rubric,content,"failed"); raise
+        text = await generate_text(CHANNEL_EDITOR_SYSTEM, build_channel_prompt(dt, rubric))
+        text = (text or "").strip()
+        if len(text) < 120:
+            raise RuntimeError("слишком короткий пост")
+        return text
+    except Exception as e:
+        logging.error(f"Канал: генерация {rubric} не удалась: {e}")
+        return FALLBACK_POSTS[rubric]
+
+async def publish_channel_slot(dt, rubric):
+    key = channel_slot_key(dt, rubric)
+    if channel_was_sent(key):
+        return False
+    text = await generate_channel_post(dt, rubric)
+    button_text, start_payload = WEEKLY_FUNNEL[dt.weekday()][rubric]
+    try:
+        await send_to_channel(text, button_text, start_payload)
+        save_channel_post(key, rubric, extract_topic(text), text, "sent")
+        return True
+    except Exception as e:
+        save_channel_post(key, rubric, extract_topic(text), text, "failed")
+        logging.exception(f"Ошибка публикации {key}: {e}")
+        return False
+
+async def publish_channel_intro():
+    text = """🔮 Добро пожаловать в «Аура — Психология»
+
+Здесь не обещают предсказать жизнь одной фразой. Канал помогает лучше слышать себя, замечать повторяющиеся сценарии и принимать решения спокойнее.
+
+Что будет в канале:
+
+🧠 практическая психология без сложных терминов;
+❤️ отношения, границы и самоценность;
+💰 деньги, реализация и внутренние опоры;
+🃏 Таро и символические практики как способ посмотреть на ситуацию с другой стороны;
+🌙 вечерние вопросы и упражнения для возвращения к себе.
+
+В канале ты получаешь полезную мысль. В AuraBot — персональное продолжение именно под твою ситуацию.
+
+Первый личный разбор можно начать бесплатно."""
+    try:
+        await send_to_channel(text, "🎁 Получить первый личный разбор", "channel_self")
+        return True
+    except Exception as e:
+        logging.exception(f"Не удалось опубликовать intro: {e}")
+        return False
 
 async def channel_posting_loop():
     await asyncio.sleep(5)
     while True:
-        now=datetime.now(MOSCOW)
+        now = datetime.now(MOSCOW)
         try:
-            # catch up only today's missed slots, no more than 6 hours late
-            for (h,m),rubric in CHANNEL_SLOTS.items():
-                slot=now.replace(hour=h,minute=m,second=0,microsecond=0)
-                if slot<=now and (now-slot).total_seconds()<=21600:
-                    await publish_channel_slot(slot,rubric)
-            # calculate next slot
-            candidates=[]
-            for (h,m),rubric in CHANNEL_SLOTS.items():
-                d=now.replace(hour=h,minute=m,second=0,microsecond=0)
-                if d<=now: d+=timedelta(days=1)
-                candidates.append((d,rubric))
-            nxt,rubric=min(candidates,key=lambda x:x[0])
-            await asyncio.sleep(max(1,(nxt-now).total_seconds()))
-            await publish_channel_slot(nxt,rubric)
+            for (hour, minute), rubric in CHANNEL_SLOTS.items():
+                slot = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                lateness = (now - slot).total_seconds()
+                if 0 <= lateness <= 21600:
+                    await publish_channel_slot(slot, rubric)
+                    await asyncio.sleep(2)
+
+            candidates = []
+            for (hour, minute), rubric in CHANNEL_SLOTS.items():
+                candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                if candidate <= now:
+                    candidate += timedelta(days=1)
+                candidates.append((candidate, rubric))
+
+            next_dt, next_rubric = min(candidates, key=lambda item: item[0])
+            await asyncio.sleep(max(1, (next_dt - now).total_seconds()))
+            await publish_channel_slot(next_dt, next_rubric)
         except Exception as e:
-            logging.exception(f"Channel loop: {e}"); await asyncio.sleep(60)
+            logging.exception(f"Channel loop: {e}")
+            await asyncio.sleep(60)
 
 # ========== MAIN ==========
 async def main():
