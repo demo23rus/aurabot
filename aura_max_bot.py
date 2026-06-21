@@ -1490,6 +1490,35 @@ async def webhook(request: Request):
             plan, _ = get_subscription(user_id)
             asyncio.create_task(asyncio.to_thread(sheets_log_visit, user_id, first_name, username, plan))
 
+            if start_payload == "channel_intro":
+                try:
+                    conn = sqlite3.connect(DB)
+                    conn.execute(
+                        "INSERT INTO channel_clicks (user_id,source,target,clicked_at) VALUES (?,?,?,?)",
+                        (user_id, start_payload, "intro_choice", datetime.now().isoformat())
+                    )
+                    conn.commit()
+                    conn.close()
+                except Exception as e:
+                    logging.error(f"Ошибка записи перехода из закрепа: {e}")
+                await send_message(
+                    chat_id,
+                    "🎁 Начнём с бесплатного личного разбора.\n\nВыбери, что сейчас волнует тебя сильнее всего:",
+                    [
+                        [{"type": "callback", "text": "🔮 Разобрать ситуацию", "payload": "cat_situation"}],
+                        [
+                            {"type": "callback", "text": "❤️ Отношения", "payload": "cat_love"},
+                            {"type": "callback", "text": "💰 Деньги", "payload": "cat_money"}
+                        ],
+                        [
+                            {"type": "callback", "text": "🧠 Психолог", "payload": "psycho"},
+                            {"type": "callback", "text": "✨ Узнать себя", "payload": "cat_self"}
+                        ],
+                        [{"type": "callback", "text": "🏠 Главное меню", "payload": "back_menu"}],
+                    ]
+                )
+                return
+
             routes = {
                 "channel_taro": "taro",
                 "channel_money": "money_code",
@@ -1817,21 +1846,25 @@ async def publish_channel_slot(dt, rubric):
 async def publish_channel_intro():
     text = """🔮 Добро пожаловать в «Аура — Психология»
 
-Здесь не обещают предсказать жизнь одной фразой. Канал помогает лучше слышать себя, замечать повторяющиеся сценарии и принимать решения спокойнее.
+Иногда нужен не общий совет, а спокойное место, где можно понять, что происходит именно с тобой.
 
-Что будет в канале:
+В этом канале:
 
-🧠 практическая психология без сложных терминов;
-❤️ отношения, границы и самоценность;
-💰 деньги, реализация и внутренние опоры;
-🃏 Таро и символические практики как способ посмотреть на ситуацию с другой стороны;
-🌙 вечерние вопросы и упражнения для возвращения к себе.
+🧠 простая психология без сложных терминов
+❤️ отношения, границы и самоценность
+💰 деньги, реализация и внутренние опоры
+🃏 Таро и символические практики для взгляда на ситуацию с другой стороны
+🌙 вечерние вопросы и короткие практики для возвращения к себе
 
-В канале ты получаешь полезную мысль. В AuraMAX — персональное продолжение именно под твою ситуацию.
+Каждый день здесь выходят полезные посты, которые можно применить сразу.
 
-Первый личный разбор можно начать бесплатно."""
+А когда общего совета недостаточно, AuraMAX поможет разобрать твою личную ситуацию: отношения, деньги, внутреннее состояние или жизненный выбор.
+
+🎁 В боте бесплатно доступны 5 персональных разборов и 15 сообщений AI-психологу.
+
+Начни с того, что волнует тебя сейчас."""
     try:
-        await send_to_channel(text, "🎁 Получить первый личный разбор", "channel_self")
+        await send_to_channel(text, "🎁 Начать бесплатный личный разбор", "channel_intro")
         return True
     except Exception as e:
         logging.exception(f"Не удалось опубликовать intro: {e}")
