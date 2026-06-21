@@ -147,6 +147,35 @@ logging.basicConfig(level=logging.INFO)
 openai_client = AsyncOpenAI(api_key=OPENAI_KEY, base_url="https://api.proxyapi.ru/openai/v1")
 claude_client = anthropic.Anthropic(api_key=CLAUDE_KEY)
 
+# Фоновые задачи webhook: MAX должен получать HTTP 200 сразу,
+# а долгие AI-операции выполняются независимо от времени ответа webhook.
+BACKGROUND_TASKS = set()
+
+def create_background_task(coro):
+    task = asyncio.create_task(coro)
+    BACKGROUND_TASKS.add(task)
+    task.add_done_callback(BACKGROUND_TASKS.discard)
+    return task
+
+async def run_user_task(chat_id, user_id, operation, coro):
+    try:
+        await coro
+    except Exception as exc:
+        logging.exception("Ошибка фоновой операции %s для user_id=%s", operation, user_id)
+        try:
+            await send_message(
+                chat_id,
+                "⚠️ Не удалось завершить обработку. Попробуй ещё раз через минуту. "
+                "Если ошибка повторится — нажми «💬 Поддержка».",
+                back_button(),
+            )
+        except Exception:
+            logging.exception("Не удалось отправить пользователю сообщение об ошибке")
+        try:
+            await notify_owner("⚠️ Ошибка AuraMAX", user_id, operation, str(exc)[:700])
+        except Exception:
+            logging.exception("Не удалось уведомить владельца")
+
 # ========== MAX API ==========
 async def send_message(chat_id, text, buttons=None):
     headers = {"Authorization": MAX_TOKEN, "Content-Type": "application/json"}
@@ -682,23 +711,39 @@ COMPAT_PHOTO_SYSTEM = "Ты опытный физиогномист и псих�
 LUNAR_SYSTEM = "Ты мудрый астролог и знаток лунного календаря. Пишешь тепло, конкретно, практично. Только на русском. Никаких звёздочек и решёток."
 
 # ========== AI ФУНКЦИИ ==========
+async def _openai_text_request(messages, model="gpt-4o-mini"):
+    last_error = None
+    for attempt in range(2):
+        try:
+            response = await asyncio.wait_for(
+                openai_client.chat.completions.create(
+                    model=model, messages=messages, max_tokens=1500
+                ),
+                timeout=90,
+            )
+            content = (response.choices[0].message.content or "").strip()
+            if not content:
+                raise RuntimeError("AI вернул пустой ответ")
+            return content
+        except Exception as exc:
+            last_error = exc
+            logging.warning("Ошибка AI, попытка %s/2: %s", attempt + 1, exc)
+            if attempt == 0:
+                await asyncio.sleep(2)
+    raise RuntimeError(f"AI не ответил после двух попыток: {last_error}")
+
 async def generate_text(system, prompt, model="gpt-4o-mini"):
-    response = await openai_client.chat.completions.create(
+    return await _openai_text_request(
+        [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
         model=model,
-        messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-        max_tokens=1500
     )
-    return response.choices[0].message.content
 
 async def generate_with_history(system, history, new_message):
     messages = [{"role": "system", "content": system}]
     for role, content in history:
         messages.append({"role": role, "content": content})
     messages.append({"role": "user", "content": new_message})
-    response = await openai_client.chat.completions.create(
-        model="gpt-4o-mini", messages=messages, max_tokens=1500
-    )
-    return response.choices[0].message.content
+    return await _openai_text_request(messages, model="gpt-4o-mini")
 
 async def generate_with_claude_photo(system_prompt, image_bytes):
     import base64
@@ -1581,13 +1626,20 @@ async def webhook(request: Request):
                         )
                         logging.info(f"Фото payload: {payload_data}")
                         if photo_url:
-                            await process_photo(chat_id, user_id, photo_url)
+                            create_background_task(run_user_task(
+                                chat_id, user_id, "photo",
+                                process_photo(chat_id, user_id, photo_url)
+                            ))
                             return JSONResponse({"ok": True})
                         else:
                             logging.error(f"Не найден URL фото: {payload_data}")
 
             if text:
-                await process_command(chat_id, user_id, text, username, first_name)
+                create_background_task(run_user_task(
+                    chat_id, user_id, "message",
+                    process_command(chat_id, user_id, text, username, first_name)
+                ))
+                return JSONResponse({"ok": True})
 
         elif update_type == "message_callback":
             user = callback.get("user", {})
@@ -1602,7 +1654,11 @@ async def webhook(request: Request):
             payload = callback.get("payload", "")
             logging.info(f"CALLBACK: chat_id={chat_id} user_id={user_id} payload={payload}")
             if chat_id and payload:
-                await process_callback(chat_id, user_id, payload, first_name)
+                create_background_task(run_user_task(
+                    chat_id, user_id, f"callback:{payload}",
+                    process_callback(chat_id, user_id, payload, first_name)
+                ))
+                return JSONResponse({"ok": True})
             else:
                 logging.error(f"Нет chat_id в callback: {data}")
 
