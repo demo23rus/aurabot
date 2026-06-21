@@ -32,11 +32,24 @@ SUPPORT_URL = "https://t.me/Boss023rus"
 ONE_TIME_PRODUCTS = {
     "once_money_code": {"feature": "money_code", "title": "Денежный код", "amount": 199},
     "once_matrix": {"feature": "matrix", "title": "Матрица судьбы", "amount": 249},
-    "once_forecast": {"feature": "forecast", "title": "Прогноз на год", "amount": 299},
+    "once_forecast": {"feature": "annual_forecast", "title": "Прогноз на год", "amount": 299},
     "once_natal": {"feature": "natal", "title": "Натальная карта", "amount": 349},
 }
 FEATURE_TO_PRODUCT = {v["feature"]: k for k, v in ONE_TIME_PRODUCTS.items()}
 PLATFORM_NAME = "Telegram"
+
+
+def clean_display_text(text):
+    """Remove raw Markdown artifacts from bot answers and channel posts."""
+    value = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    value = re.sub(r"\*\*(.*?)\*\*", r"\1", value, flags=re.S)
+    value = re.sub(r"__(.*?)__", r"\1", value, flags=re.S)
+    value = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", value)
+    value = value.replace("```", "").replace("`", "")
+    value = value.replace("**", "").replace("__", "").replace("*", "")
+    value = re.sub(r"(?m)^\s*[-–—]\s+", "• ", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip()
 
 # Лимиты
 FREE_REQUESTS = 5
@@ -168,7 +181,7 @@ def telegram_keyboard(buttons):
 async def send_message(chat_id, text, buttons=None):
     return await bot.send_message(
         chat_id,
-        text[:4096],
+        clean_display_text(text)[:4096],
         reply_markup=telegram_keyboard(buttons),
         disable_web_page_preview=True
     )
@@ -207,7 +220,7 @@ def category_buttons(category):
         "situation": [
             [{"type":"callback","text":"🃏 Таро на ситуацию","payload":"taro"}],
             [{"type":"callback","text":"💤 Толкование сна","payload":"dreams"}],
-            [{"type":"callback","text":"📅 Прогноз на период","payload":"forecast"}],
+            [{"type":"callback","text":"📅 Прогноз на период","payload":"forecast_period"}],
         ],
         "love": [
             [{"type":"callback","text":"❤️ Совместимость по датам","payload":"compatibility"}],
@@ -217,7 +230,7 @@ def category_buttons(category):
         "money": [
             [{"type":"callback","text":"💰 Денежный код","payload":"money_code"}],
             [{"type":"callback","text":"🌌 Матрица судьбы","payload":"matrix"}],
-            [{"type":"callback","text":"📊 Прогноз на год","payload":"forecast"}],
+            [{"type":"callback","text":"📊 Прогноз на год","payload":"annual_forecast"}],
         ],
         "self": [
             [{"type":"callback","text":"🔢 Нумерология","payload":"numerology"}],
@@ -351,6 +364,16 @@ def init_db():
         shown_at TEXT NOT NULL,
         PRIMARY KEY (user_id, milestone)
     )""")
+    # Миграция старых разовых кредитов: ранее прогноз на год хранился как feature='forecast'.
+    c.execute("""INSERT INTO one_time_credits(user_id, feature, credits, updated_at)
+                 SELECT user_id, 'annual_forecast', credits, updated_at
+                 FROM one_time_credits
+                 WHERE feature='forecast'
+                 ON CONFLICT(user_id, feature) DO UPDATE SET
+                    credits=one_time_credits.credits + excluded.credits,
+                    updated_at=excluded.updated_at""")
+    c.execute("DELETE FROM one_time_credits WHERE feature='forecast'")
+    conn.commit()
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA busy_timeout=5000")
     conn.commit()
@@ -643,15 +666,15 @@ async def check_access(user_id, feature="general"):
             return "ok"
         return "diary_blocked"
 
-    if feature in ("compat_photo", "taro_photo", "money_code", "aura_photo"):
+    if feature in ("compat_photo", "taro_photo", "aura_photo"):
         return "start_block"
 
-    if feature in ("matrix", "forecast", "natal"):
-        if plan == "aura_start":
-            return "start_block"
-        return "ok" if lim["requests"] < FREE_REQUESTS else "limit_free"
+    # Эти четыре продукта продаются отдельно или входят в Про.
+    # Они никогда не расходуют пять бесплатных базовых разборов.
+    if feature in FEATURE_TO_PRODUCT:
+        return "start_block"
 
-    photo_map = {"chiromancy": "chiromancy", "physio": "physio", "grapho": "grapho", "aura_photo": "aura_photo"}
+    photo_map = {"chiromancy": "chiromancy", "physio": "physio", "grapho": "grapho"}
     if feature in photo_map:
         if plan == "aura_start":
             return "ok" if lim[feature] < START_PHOTO else "limit_photo"
@@ -696,7 +719,7 @@ async def generate_text(system, prompt, model="gpt-4o-mini"):
         messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
         max_tokens=1500
     )
-    return response.choices[0].message.content
+    return clean_display_text(response.choices[0].message.content)
 
 async def generate_with_history(system, history, new_message):
     messages = [{"role": "system", "content": system}]
@@ -706,7 +729,7 @@ async def generate_with_history(system, history, new_message):
     response = await openai_client.chat.completions.create(
         model="gpt-4o-mini", messages=messages, max_tokens=1500
     )
-    return response.choices[0].message.content
+    return clean_display_text(response.choices[0].message.content)
 
 async def generate_with_claude_photo(system_prompt, image_bytes):
     import base64
@@ -729,7 +752,7 @@ async def generate_with_claude_photo(system_prompt, image_bytes):
             {"type": "text", "text": system_prompt}
         ]}]
     )
-    return response.content[0].text
+    return clean_display_text(response.content[0].text)
 
 # ========== ОПЛАТА ==========
 async def create_payment(user_id, plan):
@@ -1147,7 +1170,8 @@ async def process_command(chat_id, user_id, text, username="", first_name=""):
         "taro": (TARO_SYSTEM, "Вопрос: {text}\n\nВытащи 3 карты Таро. Расклад: прошлое, настоящее, будущее. Расскажи что означают."),
         "dreams": (DREAMS_SYSTEM, "Сон: {text}\n\nДай толкование психологическое и эзотерическое. Говори конкретно."),
         "aura": (AURA_SYSTEM, "Дата рождения: {text}\n\nРасскажи об ауре: цвет, энергетика, сильные стороны, уязвимости."),
-        "forecast": (FORECAST_SYSTEM, "Данные: {text}\n\nСоставь нумерологический прогноз на период."),
+        "forecast_period": (FORECAST_SYSTEM, "Данные: {text}\n\nСоставь краткий практичный нумерологический прогноз только на указанный период — неделю или месяц. Не превращай его в полный годовой разбор."),
+        "annual_forecast": (FORECAST_SYSTEM, "Дата рождения: {text}\n\nСоставь полный персональный прогноз на 12 месяцев: главная тема года, деньги и работа, отношения, внутреннее состояние, сильные периоды, периоды осторожности, рекомендации по каждому кварталу и итоговый план действий. Не давай фатальных гарантий."),
         "compatibility": (COMPATIBILITY_SYSTEM, "Данные: {text}\n\nПроанализируй совместимость двух людей."),
         "natal": (NATAL_SYSTEM, "Данные (дата, время, место): {text}\n\nПрочитай натальную карту."),
         "horoscope": (HOROSCOPE_SYSTEM, f"Знак зодиака: {{text}}\n\nГороскоп на сегодня {datetime.now().strftime('%d.%m.%Y')}."),
@@ -1160,7 +1184,7 @@ async def process_command(chat_id, user_id, text, username="", first_name=""):
             save_profile(user_id, birth_date=birth)
             with db_connect() as conn:
                 conn.execute("UPDATE users SET birth_date=? WHERE user_id=?", (birth,user_id))
-        feature = step if step in ("matrix", "forecast", "natal", "money_code", "taro_photo", "compat_photo") else "general"
+        feature = step if step in FEATURE_TO_PRODUCT else "general"
         plan_now, _ = get_subscription(user_id)
         use_one_time = feature in FEATURE_TO_PRODUCT and plan_now != "aura_pro" and get_one_time_credit(user_id, feature) > 0
         access = "one_time" if use_one_time else await check_access(user_id, feature)
@@ -1309,14 +1333,15 @@ async def process_callback(chat_id, user_id, payload, first_name=""):
         "taro": "Напиши свой вопрос или опиши ситуацию:",
         "dreams": "Опиши свой сон подробно — что происходило, кто был, какие образы:",
         "aura": "Введи дату рождения в формате ДД.ММ.ГГГГ:",
-        "forecast": "Введи дату рождения и период:\nНапример: 15.03.1990, месяц",
+        "forecast_period": "Введи дату рождения и период:\nНапример: 15.03.1990, месяц",
+        "annual_forecast": "Введи дату рождения в формате ДД.ММ.ГГГГ\nНапример: 15.03.1990",
         "compatibility": "Введи данные обоих людей:\nМария 15.03.1990 Александр 22.07.1988",
         "natal": "Введи дату, время и место рождения:\n15.03.1990 14:30 Москва",
         "horoscope": "Напиши свой знак зодиака:\nНапример: Телец, Скорпион, Водолей",
         "money_code": "Введи своё полное имя и дату рождения:\nМария Иванова 15.03.1990",
     }
 
-    pro_features = ("matrix", "forecast", "natal", "money_code", "taro_photo", "compat_photo")
+    pro_features = ("matrix", "annual_forecast", "natal", "money_code", "taro_photo", "compat_photo")
     photo_features = ("aura_photo", "chiromancy", "physio", "grapho")
 
     if payload == "psycho":
@@ -1399,7 +1424,8 @@ async def process_callback(chat_id, user_id, payload, first_name=""):
         feature_names = {
             "numerology": "🔢 Нумерология", "matrix": "🌌 Матрица судьбы",
             "taro": "🃏 Таро", "dreams": "💤 Толкование снов",
-            "aura": "🌈 Аура", "forecast": "📅 Прогноз",
+            "aura": "🌈 Аура", "forecast_period": "📅 Прогноз на период",
+            "annual_forecast": "📊 Прогноз на год",
             "compatibility": "❤️ Совместимость", "natal": "♈ Натальная карта",
             "horoscope": "🌟 Гороскоп", "money_code": "💰 Денежный код",
         }
@@ -1502,7 +1528,7 @@ async def process_start_payload(message: Message):
             "channel_day": "my_day",
             "channel_dreams": "dreams",
             "channel_matrix": "matrix",
-            "channel_forecast": "forecast",
+            "channel_forecast": "forecast_period",
             "channel_love": "compatibility",
             "channel_self": "numerology",
             "channel_diary": "diary",
@@ -1522,6 +1548,27 @@ async def process_start_payload(message: Message):
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     await process_start_payload(message)
+
+@dp.message(Command("reset_me"))
+async def cmd_reset_me(message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+    user_id = message.from_user.id
+    with db_connect() as conn:
+        conn.execute("INSERT OR IGNORE INTO limits (user_id) VALUES (?)", (user_id,))
+        conn.execute(
+            """UPDATE limits SET requests=0, psycho_messages=0,
+               photo_chiromancy=0, photo_physio=0, photo_grapho=0
+               WHERE user_id=?""",
+            (user_id,),
+        )
+        conn.execute("DELETE FROM sales_prompts WHERE user_id=?", (user_id,))
+    set_step(user_id, "idle")
+    await message.answer(
+        "✅ Тестовые лимиты сброшены только для вашего аккаунта.\n\n"
+        "Снова доступны 5 бесплатных разборов и 15 сообщений психологу. "
+        "Подписки и разовые покупки не изменены."
+    )
 
 @dp.message(Command("reset"))
 async def cmd_reset(message: Message):
@@ -1683,7 +1730,7 @@ CHANNEL_EDITOR_SYSTEM = """Ты главный редактор премиаль
 Пиши живо, конкретно и современно. Не используй дешёвую мистику, запугивание, фатальные обещания, выдуманные отзывы и гарантии результата.
 Каждый пост должен дать узнавание, одну практическую пользу и естественно подвести к персональному продолжению в боте.
 Не добавляй ссылки, хэштеги и фразы «перейди по ссылке» — нативную кнопку добавит программа.
-Короткие абзацы, только русский язык."""
+Короткие абзацы, только русский язык. Не используй Markdown-разметку: звёздочки, решётки, подчёркивания и обратные кавычки."""
 
 CHANNEL_SLOTS = {(9, 0): "morning", (13, 0): "value", (20, 0): "evening"}
 
@@ -1728,11 +1775,11 @@ async def send_to_channel(text, button_text, start_payload, image_path=None):
     if image_path and os.path.exists(image_path):
         from aiogram.types import FSInputFile
         return await bot.send_photo(
-            CHANNEL_ID, FSInputFile(image_path), caption=text[:1024],
+            CHANNEL_ID, FSInputFile(image_path), caption=clean_display_text(text)[:1024],
             reply_markup=keyboard
         )
     return await bot.send_message(
-        CHANNEL_ID, text[:4096], reply_markup=keyboard, disable_web_page_preview=True
+        CHANNEL_ID, clean_display_text(text)[:4096], reply_markup=keyboard, disable_web_page_preview=True
     )
 
 def channel_slot_key(dt, rubric):
@@ -1790,7 +1837,7 @@ def build_channel_prompt(dt, rubric):
 async def generate_channel_post(dt, rubric):
     try:
         text = await generate_text(CHANNEL_EDITOR_SYSTEM, build_channel_prompt(dt, rubric))
-        text = (text or "").strip()
+        text = clean_display_text(text)
         if len(text) < 120:
             raise RuntimeError("слишком короткий пост")
         return text
