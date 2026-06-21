@@ -267,7 +267,7 @@ def upgrade_buttons(plan="any"):
             [{"type": "callback", "text": "🔙 В меню", "payload": "back_menu"}]
         ]
     return [
-        [{"type": "callback", "text": "🟢 Старт — 190 руб", "payload": "pay_start"}],
+        [{"type": "callback", "text": "✅ Старт — 190 руб", "payload": "pay_start"}],
         [{"type": "callback", "text": "🔥 Про — 390 руб", "payload": "pay_pro"}],
         [{"type": "callback", "text": "💜 Про на год — 2 990 руб", "payload": "pay_year"}],
         [{"type": "callback", "text": "🔙 В меню", "payload": "back_menu"}]
@@ -936,7 +936,7 @@ async def check_payments_loop():
 
                         delete_pending_payment(payment_id)
                         plan_name = (
-                            "🟢 Старт" if plan == "aura_start"
+                            "✅ Старт" if plan == "aura_start"
                             else "💜 Про на год" if plan == "aura_pro_year"
                             else "🔥 Про"
                         )
@@ -1089,7 +1089,7 @@ def get_profile_text(user_id):
     with sqlite3.connect(DB) as conn:
         row = conn.execute("SELECT birth_date FROM user_profiles WHERE user_id=?", (user_id,)).fetchone()
     birth = row[0] if row and row[0] else ""
-    plan_name = {"aura_start": "🟢 Аура Старт", "aura_pro": "🔥 Аура Про"}.get(plan, "Бесплатный")
+    plan_name = {"aura_start": "✅ Аура Старт", "aura_pro": "🔥 Аура Про"}.get(plan, "Бесплатный")
     until = f" до {end.strftime('%d.%m.%Y')}" if end else ""
     return (f"👤 Твой профиль\n\nТариф: {plan_name}{until}\n"
             f"Дата рождения: {birth or 'не указана'}\n"
@@ -1118,7 +1118,7 @@ async def handle_limit_msg(chat_id, access):
     elif access == "limit_photo":
         await send_message(chat_id, "🚫 Лимит фото-анализов на Старте (5 раз).\n\nПерейди на Про:", upgrade_buttons("start"))
     elif access == "diary_blocked":
-        await send_message(chat_id, "📔 Личный дневник доступен с тарифа 🟢 Старт.\n\n190 руб/мес:", upgrade_buttons())
+        await send_message(chat_id, "📔 Личный дневник доступен с тарифа ✅ Старт.\n\n190 руб/мес:", upgrade_buttons())
     elif access == "start_block":
         await send_message(chat_id, "🔒 Эта функция доступна только на тарифе 🔥 Про.\n\n390 руб/мес:", upgrade_buttons("start"))
 
@@ -1132,6 +1132,38 @@ async def process_command(chat_id, user_id, text, username="", first_name=""):
             chat_id,
             (f"Ваш MAX user_id: {user_id}\nMAX chat_id: {chat_id}\nUsername: @{username}"
              if username else f"Ваш MAX user_id: {user_id}\nMAX chat_id: {chat_id}"),
+            main_menu_buttons()
+        )
+        return
+
+    if text == "/reset_me":
+        if not is_owner(user_id, username):
+            await send_message(chat_id, "⛔ Команда доступна владельцу.", main_menu_buttons())
+            return
+        with db_connect() as conn:
+            conn.execute(
+                """INSERT OR IGNORE INTO limits
+                   (user_id, requests, psycho_messages, photo_chiromancy, photo_physio, photo_grapho)
+                   VALUES (?, 0, 0, 0, 0, 0)""",
+                (user_id,)
+            )
+            conn.execute(
+                """UPDATE limits
+                   SET requests=0,
+                       psycho_messages=0,
+                       photo_chiromancy=0,
+                       photo_physio=0,
+                       photo_grapho=0
+                   WHERE user_id=?""",
+                (user_id,)
+            )
+            conn.execute("DELETE FROM sales_prompts WHERE user_id=?", (user_id,))
+        set_step(user_id, "idle")
+        await send_message(
+            chat_id,
+            "✅ Тестовые лимиты сброшены.\n\n"
+            "Снова доступны 5 бесплатных разборов и 15 сообщений психологу. "
+            "Подписки и покупки не изменены.",
             main_menu_buttons()
         )
         return
@@ -1315,12 +1347,12 @@ async def process_callback(chat_id, user_id, payload, first_name=""):
         plan, sub_end = get_subscription(user_id)
         current = ""
         if plan == "aura_start":
-            current = f"\n\n✅ Твой тариф: 🟢 Старт (до {sub_end.strftime('%d.%m.%Y')})"
+            current = f"\n\n✅ Твой тариф: ✅ Старт (до {sub_end.strftime('%d.%m.%Y')})"
         elif plan == "aura_pro":
             current = f"\n\n✅ Твой тариф: 🔥 Про (до {sub_end.strftime('%d.%m.%Y')})"
         await send_message(chat_id,
             f"💎 Тарифы AuraBot\n\n"
-            f"🟢 Старт — 190 руб / 1 месяц\n"
+            f"✅ Старт — 190 руб / 1 месяц\n"
             f"Все базовые функции безлимит\n"
             f"Хиромантия, Физиогномика, Графология — по 5 раз\n"
             f"Психолог — 100 сообщений\n"
@@ -1338,7 +1370,7 @@ async def process_callback(chat_id, user_id, payload, first_name=""):
             f"🌙 Всем бесплатно: лунный календарь каждое утро\n\n"
             f"🎁 Бесплатно: 5 разборов + 15 сообщений психологу{current}",
             [
-                [{"type": "callback", "text": "🟢 Старт — 190 руб", "payload": "pay_start"}],
+                [{"type": "callback", "text": "✅ Старт — 190 руб", "payload": "pay_start"}],
                 [{"type": "callback", "text": "🔥 Про — 390 руб", "payload": "pay_pro"}],
                 [{"type": "callback", "text": "💜 Про на год — 2 990 руб", "payload": "pay_year"}],
                 [{"type": "callback", "text": "🔙 В меню", "payload": "back_menu"}]
