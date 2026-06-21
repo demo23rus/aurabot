@@ -2,8 +2,10 @@ import asyncio
 import sqlite3
 import logging
 import uuid
+import os
 import httpx
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from openai import AsyncOpenAI
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -20,9 +22,19 @@ CLAUDE_KEY = "sk-ant-api03-23Ex-c3q51Ue6WMQ1zQn_b4MetM5YxAydtyGqtV_tZ7jZY1W_VZg9
 OWNER_ID = 549639607
 SUPPORT_URL = "https://t.me/Boss023rus"
 
+ONE_TIME_PRODUCTS = {
+    "once_money_code": {"feature": "money_code", "title": "Денежный код", "amount": 199},
+    "once_matrix": {"feature": "matrix", "title": "Матрица судьбы", "amount": 249},
+    "once_forecast": {"feature": "forecast", "title": "Прогноз на год", "amount": 299},
+    "once_natal": {"feature": "natal", "title": "Натальная карта", "amount": 349},
+}
+FEATURE_TO_PRODUCT = {v["feature"]: k for k, v in ONE_TIME_PRODUCTS.items()}
+PLATFORM_NAME = "MAX"
+MOSCOW = ZoneInfo("Europe/Moscow")
+
 # Лимиты
-FREE_REQUESTS = 15
-FREE_PSYCHO = 30
+FREE_REQUESTS = 5
+FREE_PSYCHO = 15
 START_PSYCHO = 100
 START_PHOTO = 5
 
@@ -30,66 +42,94 @@ START_PHOTO = 5
 YOOKASSA_SHOP_ID = "1363324"
 YOOKASSA_SECRET = "live_-RKE9nsi8wZiM-5f00z78E84OYSi3M0Dj9w_-pE0Mvw"
 
-# ========== GOOGLE SHEETS ==========
+# ========== GOOGLE SHEETS — КОМПАКТНАЯ КОММЕРЧЕСКАЯ АНАЛИТИКА ==========
 GOOGLE_CREDS_PATH = "/root/google_credentials.json"
 SPREADSHEET_NAME = "PostGenius Users"
-SHEET_NAME = "АураМакс"
+USERS_SHEET_NAME = "Aura MAX"
+SALES_SHEET_NAME = "Продажи Aura"
 
-def get_gsheet():
-    try:
-        scopes = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds = Credentials.from_service_account_file(GOOGLE_CREDS_PATH, scopes=scopes)
-        gc = gspread.authorize(creds)
-        spreadsheet = gc.open(SPREADSHEET_NAME)
-        try:
-            return spreadsheet.worksheet(SHEET_NAME)
-        except gspread.WorksheetNotFound:
-            ws = spreadsheet.add_worksheet(title=SHEET_NAME, rows=1000, cols=10)
-            ws.append_row(["Дата", "user_id", "Имя", "Username", "Тариф", "Отзыв"])
-            return ws
-    except Exception as e:
-        logging.error(f"Ошибка Google Sheets: {e}")
-        return None
+USERS_HEADERS = ["Последнее посещение", "ID", "Имя", "Username", "Запросы", "Подписка", "До", "Отзыв"]
+SALES_HEADERS = ["Дата", "Платформа", "ID", "Имя", "Тариф", "Сумма", "Подписка до"]
 
-def sheets_log_visit(user_id, first_name, username, plan):
+def _open_spreadsheet():
+    scopes = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    creds = Credentials.from_service_account_file(GOOGLE_CREDS_PATH, scopes=scopes)
+    gc = gspread.authorize(creds)
+    return gc.open(SPREADSHEET_NAME)
+
+def _get_or_create_sheet(title, headers, rows=2000):
+    spreadsheet = _open_spreadsheet()
     try:
-        ws = get_gsheet()
-        if ws:
-            ws.append_row([
-                datetime.now().strftime("%d.%m.%Y %H:%M"),
-                str(user_id),
-                first_name or "",
-                username or "",
-                plan or "бесплатный",
-                ""
-            ])
+        ws = spreadsheet.worksheet(title)
+    except gspread.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title=title, rows=rows, cols=max(10, len(headers) + 2))
+        ws.append_row(headers)
+    current = ws.row_values(1)
+    if current != headers:
+        ws.update("A1", [headers])
+    return ws
+
+def _sheet_row_by_user(ws, user_id):
+    ids = ws.col_values(2)
+    uid = str(user_id)
+    for index, value in enumerate(ids[1:], start=2):
+        if value == uid:
+            return index
+    return None
+
+def _usage_count(user_id):
+    try:
+        lim = get_limits(user_id)
+        return int(lim.get("requests", 0)) + int(lim.get("psycho", 0)) + int(lim.get("chiromancy", 0)) + int(lim.get("physio", 0)) + int(lim.get("grapho", 0))
+    except Exception:
+        return 0
+
+def sheets_sync_user(user_id, first_name="", username="", review_text=None):
+    """Одна строка на пользователя: посещение, запросы, подписка и отзыв."""
+    try:
+        ws = _get_or_create_sheet(USERS_SHEET_NAME, USERS_HEADERS)
+        plan, sub_end = get_subscription(user_id)
+        plan_name = {"aura_start": "Старт", "aura_pro": "Про"}.get(plan, "Бесплатный")
+        until = sub_end.strftime("%d.%m.%Y") if sub_end else "—"
+        row = _sheet_row_by_user(ws, user_id)
+        old_review = ""
+        if row:
+            old_review = ws.cell(row, 8).value or ""
+        values = [
+            datetime.now().strftime("%d.%m.%Y %H:%M"),
+            str(user_id),
+            first_name or "—",
+            ("@" + username) if username else "—",
+            str(_usage_count(user_id)),
+            plan_name,
+            until,
+            review_text if review_text is not None else old_review,
+        ]
+        if row:
+            ws.update(f"A{row}:H{row}", [values])
+        else:
+            ws.append_row(values)
     except Exception as e:
-        logging.error(f"Ошибка записи посещения в Sheets: {e}")
+        logging.error(f"Google Sheets user sync: {e}")
+
+def sheets_log_visit(user_id, first_name, username, plan=None):
+    sheets_sync_user(user_id, first_name, username)
 
 def sheets_log_review(user_id, first_name, username, review_text):
+    sheets_sync_user(user_id, first_name, username, review_text=review_text[:1000])
+
+def sheets_log_sale(user_id, first_name, plan, amount, sub_end, platform):
     try:
-        ws = get_gsheet()
-        if not ws:
-            return
-        col_user = ws.col_values(2)
-        uid_str = str(user_id)
-        last_row = None
-        for i, val in enumerate(col_user):
-            if val == uid_str:
-                last_row = i + 1
-        if last_row:
-            ws.update_cell(last_row, 6, review_text)
-        else:
-            ws.append_row([
-                datetime.now().strftime("%d.%m.%Y %H:%M"),
-                uid_str,
-                first_name or "",
-                username or "",
-                "",
-                review_text
-            ])
+        ws = _get_or_create_sheet(SALES_SHEET_NAME, SALES_HEADERS)
+        plan_name = {"aura_start": "Старт", "aura_pro": "Про", "aura_pro_year": "Про на год"}.get(plan, plan)
+        ws.append_row([
+            datetime.now().strftime("%d.%m.%Y %H:%M"), platform, str(user_id), first_name or "—",
+            plan_name, f"{amount} ₽", sub_end.strftime("%d.%m.%Y") if sub_end else "—"
+        ])
+        sheets_sync_user(user_id, first_name, "")
     except Exception as e:
-        logging.error(f"Ошибка записи отзыва в Sheets: {e}")
+        logging.error(f"Google Sheets sale log: {e}")
+
 
 # ========== ЛОГИ ==========
 logging.basicConfig(level=logging.INFO)
@@ -144,7 +184,7 @@ def main_menu_buttons():
          {"type": "callback", "text": "👫 Совместимость фото", "payload": "compat_photo"}],
         [{"type": "callback", "text": "💎 Тарифы и оплата", "payload": "tariffs"}],
         [{"type": "callback", "text": "⭐️ Оставить отзыв", "payload": "review"}],
-        [{"type": "link", "text": "💬 Поддержка", "url": SUPPORT_URL}],
+        [{"type": "callback", "text": "💬 Поддержка", "payload": "support"}],
     ]
 
 def back_button():
@@ -215,6 +255,20 @@ def init_db():
         plan TEXT,
         created_at TEXT
     )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS payment_history (
+        payment_id TEXT PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        plan TEXT NOT NULL,
+        platform TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'succeeded',
+        processed_at TEXT NOT NULL
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS referral_rewards (
+        payment_id TEXT PRIMARY KEY,
+        referred_user_id INTEGER NOT NULL,
+        referrer_id INTEGER NOT NULL,
+        rewarded_at TEXT NOT NULL
+    )""")
     c.execute("""CREATE TABLE IF NOT EXISTS reviews (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
@@ -239,6 +293,20 @@ def init_db():
         clicked_at TEXT NOT NULL
     )""")
     c.execute("CREATE INDEX IF NOT EXISTS idx_channel_clicks_source ON channel_clicks(source)")
+
+    c.execute("""CREATE TABLE IF NOT EXISTS one_time_credits (
+        user_id INTEGER NOT NULL,
+        feature TEXT NOT NULL,
+        credits INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (user_id, feature)
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS sales_prompts (
+        user_id INTEGER NOT NULL,
+        milestone TEXT NOT NULL,
+        shown_at TEXT NOT NULL,
+        PRIMARY KEY (user_id, milestone)
+    )""")
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA busy_timeout=5000")
     conn.commit()
@@ -263,25 +331,71 @@ def set_step(user_id, step):
     conn.close()
 
 def get_subscription(user_id):
-    conn = sqlite3.connect(DB)
-    c = conn.cursor()
-    c.execute("SELECT plan, sub_end FROM subscriptions WHERE user_id=?", (user_id,))
-    row = c.fetchone()
-    conn.close()
+    """Return only an active subscription; expired access is revoked immediately."""
+    conn = sqlite3.connect(DB, timeout=10)
+    row = conn.execute(
+        "SELECT plan, sub_end FROM subscriptions WHERE user_id=?",
+        (user_id,),
+    ).fetchone()
     if not row or not row[1]:
+        conn.close()
         return None, None
-    sub_end = datetime.fromisoformat(row[1])
+    try:
+        sub_end = datetime.fromisoformat(row[1])
+    except (TypeError, ValueError):
+        conn.execute("DELETE FROM subscriptions WHERE user_id=?", (user_id,))
+        conn.commit()
+        conn.close()
+        return None, None
     if sub_end > datetime.now():
+        conn.close()
         return row[0], sub_end
-    return None, None
-
-def set_subscription(user_id, plan, days):
-    conn = sqlite3.connect(DB)
-    end = (datetime.now() + timedelta(days=days)).isoformat()
-    conn.execute("INSERT OR REPLACE INTO subscriptions (user_id, plan, sub_end) VALUES (?,?,?)",
-                 (user_id, plan, end))
+    conn.execute("DELETE FROM subscriptions WHERE user_id=?", (user_id,))
     conn.commit()
     conn.close()
+    return None, None
+
+
+def set_subscription(user_id, plan, days):
+    """Activate or extend a plan and start a fresh usage period."""
+    normalized_plan = "aura_pro" if plan == "aura_pro_year" else plan
+    now = datetime.now()
+    conn = sqlite3.connect(DB, timeout=10)
+    current = conn.execute(
+        "SELECT plan, sub_end FROM subscriptions WHERE user_id=?",
+        (user_id,),
+    ).fetchone()
+    base = now
+    if current and current[1]:
+        try:
+            old_end = datetime.fromisoformat(current[1])
+            if old_end > now and current[0] == normalized_plan:
+                base = old_end
+        except (TypeError, ValueError):
+            pass
+    end = (base + timedelta(days=days)).isoformat()
+    conn.execute(
+        "INSERT OR REPLACE INTO subscriptions (user_id, plan, sub_end) VALUES (?,?,?)",
+        (user_id, normalized_plan, end),
+    )
+    conn.execute(
+        "UPDATE limits SET requests=0, psycho_messages=0, photo_chiromancy=0, "
+        "photo_physio=0, photo_grapho=0 WHERE user_id=?",
+        (user_id,),
+    )
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO usage_periods "
+            "(user_id, period_start, period_end, requests, psycho, photo) "
+            "VALUES (?,?,?,?,?,?)",
+            (user_id, now.isoformat(), end, 0, 0, 0),
+        )
+    except sqlite3.OperationalError:
+        pass
+    conn.commit()
+    conn.close()
+    return datetime.fromisoformat(end)
+
 
 def get_limits(user_id):
     conn = sqlite3.connect(DB)
@@ -362,6 +476,110 @@ def save_review(user_id, username, first_name, review_text):
                  (user_id, username or "", first_name or "", review_text, datetime.now().isoformat()))
     conn.commit()
     conn.close()
+
+
+def get_one_time_credit(user_id, feature):
+    with db_connect() as conn:
+        row = conn.execute(
+            "SELECT credits FROM one_time_credits WHERE user_id=? AND feature=?",
+            (user_id, feature),
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def add_one_time_credit(user_id, feature, count=1):
+    with db_connect() as conn:
+        conn.execute(
+            "INSERT INTO one_time_credits(user_id,feature,credits,updated_at) VALUES (?,?,?,?) "
+            "ON CONFLICT(user_id,feature) DO UPDATE SET credits=credits+excluded.credits, updated_at=excluded.updated_at",
+            (user_id, feature, int(count), datetime.now().isoformat()),
+        )
+
+
+def consume_one_time_credit(user_id, feature):
+    """Atomically consume one credit. Called only after a successful AI result."""
+    with db_connect() as conn:
+        row = conn.execute(
+            "SELECT credits FROM one_time_credits WHERE user_id=? AND feature=?",
+            (user_id, feature),
+        ).fetchone()
+        if not row or int(row[0]) <= 0:
+            return False
+        conn.execute(
+            "UPDATE one_time_credits SET credits=credits-1, updated_at=? WHERE user_id=? AND feature=?",
+            (datetime.now().isoformat(), user_id, feature),
+        )
+    return True
+
+
+def one_time_offer_buttons(feature):
+    product_code = FEATURE_TO_PRODUCT.get(feature)
+    product = ONE_TIME_PRODUCTS.get(product_code)
+    if not product:
+        return upgrade_buttons()
+    return [
+        [{"type":"callback", "text":f"✨ Купить один разбор — {product['amount']} ₽", "payload":f"pay_{product_code}"}],
+        [{"type":"callback", "text":"🔥 Открыть всё на месяц — 390 ₽", "payload":"pay_pro"}],
+        [{"type":"callback", "text":"🔙 В меню", "payload":"back_menu"}],
+    ]
+
+
+async def send_one_time_offer(chat_id, feature):
+    product_code = FEATURE_TO_PRODUCT[feature]
+    product = ONE_TIME_PRODUCTS[product_code]
+    await send_message(
+        chat_id,
+        f"{product['title']}\n\nПолучить один полный персональный разбор — {product['amount']} ₽.\n\n"
+        "Или открыть все глубокие функции Ауры на 30 дней в тарифе Про — 390 ₽.\n"
+        "Разовая покупка не оформляет подписку и не продлевается автоматически.",
+        one_time_offer_buttons(feature),
+    )
+
+
+def claim_sales_prompt(user_id, milestone):
+    try:
+        with db_connect() as conn:
+            conn.execute(
+                "INSERT INTO sales_prompts(user_id,milestone,shown_at) VALUES (?,?,?)",
+                (user_id, milestone, datetime.now().isoformat()),
+            )
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def build_result_offer(user_id, feature, used_one_time=False):
+    """Return (note, buttons). Each milestone is shown only once per user."""
+    plan, _ = get_subscription(user_id)
+    if plan:
+        return "", back_button()
+    lim = get_limits(user_id)
+    used = int(lim.get("requests", 0))
+    milestone = None
+    note = ""
+    if used_one_time:
+        milestone = f"once_{feature}"
+        note = "\n\n✨ Разбор завершён. В Аура Про за 390 ₽ доступны все глубокие функции на 30 дней — без покупки каждого разбора отдельно."
+    elif used == 1:
+        milestone = "first_result"
+        note = "\n\n✨ Это твой первый личный результат в Ауре. В Про можно открыть Матрицу судьбы, прогнозы, денежный код, натальную карту и остальные глубокие функции."
+    elif used == 3:
+        milestone = "third_result"
+        note = "\n\nТы уже попробовала 3 персональных разбора. В Аура Про все возможности открываются на 30 дней, без оплаты каждого результата отдельно."
+    elif used >= max(0, FREE_REQUESTS - 1):
+        milestone = "last_free_results"
+        remaining = max(0, FREE_REQUESTS - used)
+        note = f"\n\nОсталось бесплатных разборов: {remaining}. Можно продолжить бесплатно или открыть все возможности Ауры на месяц."
+    if not milestone or not claim_sales_prompt(user_id, milestone):
+        return "", back_button()
+    rows = []
+    product_code = FEATURE_TO_PRODUCT.get(feature)
+    if product_code and not used_one_time:
+        product = ONE_TIME_PRODUCTS[product_code]
+        rows.append([{"type":"callback", "text":f"✨ Один разбор — {product['amount']} ₽", "payload":f"pay_{product_code}"}])
+    rows.append([{"type":"callback", "text":"🔥 Открыть все возможности — 390 ₽", "payload":"pay_pro"}])
+    rows.append([{"type":"callback", "text":"🔙 В меню", "payload":"back_menu"}])
+    return note, rows
 
 # ========== ПРОВЕРКА ДОСТУПА ==========
 async def check_access(user_id, feature="general"):
@@ -471,55 +689,174 @@ async def generate_with_claude_photo(system_prompt, image_bytes):
 
 # ========== ОПЛАТА ==========
 async def create_payment(user_id, plan):
-    amount = "190.00" if plan == "aura_start" else "390.00"
-    plan_name = "Старт" if plan == "aura_start" else "Про"
-    async with httpx.AsyncClient() as client:
+    subscriptions = {
+        "aura_start": ("190.00", "Старт", 30),
+        "aura_pro": ("390.00", "Про", 30),
+        "aura_pro_year": ("2990.00", "Про на год", 365),
+    }
+    if plan in ONE_TIME_PRODUCTS:
+        product = ONE_TIME_PRODUCTS[plan]
+        amount = f"{product['amount']:.2f}"
+        product_name = product["title"]
+        days = 0
+        purchase_type = "one_time"
+        description = f"Aura MAX Разовый разбор {product_name} — {user_id}"
+        receipt_description = f"Разовый персональный разбор: {product_name}"
+    else:
+        amount, product_name, days = subscriptions.get(plan, subscriptions["aura_pro"])
+        purchase_type = "subscription"
+        description = f"AuraBot MAX Тариф {product_name} — {user_id}"
+        receipt_description = f"AuraBot Тариф {product_name} {days} дней"
+    async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(
             "https://api.yookassa.ru/v3/payments",
             json={
                 "amount": {"value": amount, "currency": "RUB"},
-                "confirmation": {"type": "redirect", "return_url": "https://aurahelper.ru/payment/success"},
+                "confirmation": {"type": "redirect", "return_url": BOT_LINK},
                 "capture": True,
-                "description": f"AuraBot MAX Тариф {plan_name} — {user_id}",
+                "description": description,
                 "receipt": {"customer": {"email": "6038484@mail.ru"}, "items": [{
-                    "description": f"AuraBot Тариф {plan_name} 30 дней",
+                    "description": receipt_description,
                     "quantity": "1.00",
                     "amount": {"value": amount, "currency": "RUB"},
                     "vat_code": 1, "payment_subject": "service", "payment_mode": "full_payment"
                 }]},
-                "metadata": {"user_id": user_id, "plan": plan}
+                "metadata": {"user_id": user_id, "plan": plan, "purchase_type": purchase_type, "platform": "MAX"}
             },
             headers={"Idempotence-Key": str(uuid.uuid4()), "Content-Type": "application/json"},
             auth=(YOOKASSA_SHOP_ID, YOOKASSA_SECRET)
         )
+        r.raise_for_status()
         return r.json()
 
 # ========== ФОНОВАЯ ПРОВЕРКА ОПЛАТЫ ==========
 async def check_payments_loop():
+    """Confirm YooKassa payments idempotently and activate access once."""
     while True:
         await asyncio.sleep(15)
         try:
             for payment_id, user_id, plan in get_pending_payments():
                 try:
-                    async with httpx.AsyncClient() as client:
+                    with db_connect() as conn:
+                        already = conn.execute(
+                            "SELECT 1 FROM payment_history WHERE payment_id=? AND status='succeeded'",
+                            (payment_id,),
+                        ).fetchone()
+                    if already:
+                        delete_pending_payment(payment_id)
+                        continue
+
+                    async with httpx.AsyncClient(timeout=30) as client:
                         r = await client.get(
                             f"https://api.yookassa.ru/v3/payments/{payment_id}",
-                            auth=(YOOKASSA_SHOP_ID, YOOKASSA_SECRET)
+                            auth=(YOOKASSA_SHOP_ID, YOOKASSA_SECRET),
                         )
+                        r.raise_for_status()
                         payment = r.json()
-                    if payment.get("status") == "succeeded":
-                        set_subscription(user_id, plan, 30)
+
+                    status = payment.get("status")
+                    if status == "succeeded":
+                        if plan in ONE_TIME_PRODUCTS:
+                            product = ONE_TIME_PRODUCTS[plan]
+                            add_one_time_credit(user_id, product["feature"], 1)
+                            with db_connect() as conn:
+                                conn.execute(
+                                    "INSERT OR IGNORE INTO payment_history "
+                                    "(payment_id,user_id,plan,platform,status,processed_at) VALUES (?,?,?,?,?,?)",
+                                    (payment_id, user_id, plan, "MAX", "succeeded", datetime.now().isoformat()),
+                                )
+                            delete_pending_payment(payment_id)
+                            user_name, user_username, _ = get_user_identity(user_id)
+                            amount = product["amount"]
+                            asyncio.create_task(asyncio.to_thread(
+                                sheets_log_sale, user_id, user_name, product["title"], amount, None, PLATFORM_NAME
+                            ))
+                            await notify_owner(
+                                "💰 Новая разовая продажа Aura", user_id, product["title"],
+                                f"Сумма: {amount} ₽\nФункция: {product['feature']}\nPayment ID: {payment_id}"
+                            )
+                            await send_message(
+                                user_id,
+                                f"✅ Оплата прошла!\n\nТебе доступен один полный разбор «{product['title']}». "
+                                "Нажми кнопку ниже — право спишется только после успешного результата.",
+                                [[{"type":"callback", "text":f"✨ Начать: {product['title']}", "payload":product["feature"]}],
+                                 [{"type":"callback", "text":"🔙 В меню", "payload":"back_menu"}]],
+                            )
+                            continue
+
+                        activation_plan = "aura_pro" if plan == "aura_pro_year" else plan
+                        activation_days = 365 if plan == "aura_pro_year" else 30
+
+                        with db_connect() as conn:
+                            previous_paid = conn.execute(
+                                "SELECT COUNT(*) FROM payment_history WHERE user_id=? AND status='succeeded'",
+                                (user_id,),
+                            ).fetchone()[0]
+
+                        set_subscription(user_id, activation_plan, activation_days)
+
+                        with db_connect() as conn:
+                            conn.execute(
+                                "INSERT OR IGNORE INTO payment_history "
+                                "(payment_id,user_id,plan,platform,status,processed_at) VALUES (?,?,?,?,?,?)",
+                                (payment_id, user_id, plan, "MAX", "succeeded", datetime.now().isoformat()),
+                            )
+
+                        try:
+                            log_event(user_id, "payment_succeeded", feature=plan, source="MAX", value=payment_id)
+                        except Exception:
+                            pass
+
+                        if previous_paid == 0:
+                            with db_connect() as conn:
+                                ref = conn.execute(
+                                    "SELECT referrer_id FROM user_profiles WHERE user_id=?",
+                                    (user_id,),
+                                ).fetchone()
+                            if ref and ref[0] and int(ref[0]) != int(user_id):
+                                with db_connect() as conn:
+                                    inserted = conn.execute(
+                                        "INSERT OR IGNORE INTO referral_rewards "
+                                        "(payment_id,referred_user_id,referrer_id,rewarded_at) VALUES (?,?,?,?)",
+                                        (payment_id, user_id, int(ref[0]), datetime.now().isoformat()),
+                                    ).rowcount
+                                if inserted:
+                                    set_subscription(int(ref[0]), "aura_pro", 30)
+                                    try:
+                                        await send_message(
+                                            int(ref[0]),
+                                            "🎁 Твой приглашённый друг оформил первую подписку. Тебе начислено 30 дней Аура Про!",
+                                            main_menu_buttons(),
+                                        )
+                                    except Exception:
+                                        pass
+
                         delete_pending_payment(payment_id)
-                        plan_name = "🟢 Старт" if plan == "aura_start" else "🔥 Про"
-                        await send_message(user_id,
-                            f"✅ Оплата прошла!\n\nТариф {plan_name} активирован на 30 дней.\n\nПользуйся на здоровье! 🔮",
-                            main_menu_buttons()
+                        plan_name = (
+                            "🟢 Старт" if plan == "aura_start"
+                            else "💜 Про на год" if plan == "aura_pro_year"
+                            else "🔥 Про"
                         )
-                    elif payment.get("status") == "canceled":
+                        _, sub_end = get_subscription(user_id)
+                        user_name, user_username, _ = get_user_identity(user_id)
+                        amount = {"aura_start": 190, "aura_pro": 390, "aura_pro_year": 2990}.get(plan, 0)
+                        asyncio.create_task(asyncio.to_thread(sheets_log_sale, user_id, user_name, plan, amount, sub_end, PLATFORM_NAME))
+                        await notify_owner(
+                            "💰 Новая продажа Aura", user_id, plan,
+                            f"Сумма: {amount} ₽\nПодписка до: {sub_end.strftime('%d.%m.%Y') if sub_end else '—'}\nPayment ID: {payment_id}"
+                        )
+
+                        await send_message(
+                            user_id,
+                            f"✅ Оплата прошла!\n\nТариф {plan_name} активирован на {activation_days} дней.\n\nПользуйся на здоровье! 🔮",
+                            main_menu_buttons(),
+                        )
+                    elif status == "canceled":
                         delete_pending_payment(payment_id)
                         await send_message(user_id, "❌ Платёж отменён. Попробуй снова.", main_menu_buttons())
                 except Exception as e:
                     logging.error(f"Ошибка проверки платежа {payment_id}: {e}")
+                    await notify_owner("⚠️ Ошибка проверки платежа", user_id, plan, f"{payment_id}: {e}")
         except Exception as e:
             logging.error(f"Ошибка check_payments_loop: {e}")
 
@@ -561,6 +898,50 @@ async def daily_loop():
                 await send_message(user_id, f"⭐️ Твой персональный гороскоп на {today}\n\n{text}")
             except Exception as e:
                 logging.error(f"Ошибка гороскопа {user_id}: {e}")
+
+
+
+def get_user_identity(user_id):
+    try:
+        with db_connect() as conn:
+            row = conn.execute("SELECT first_name, username, step FROM users WHERE user_id=?", (user_id,)).fetchone()
+        if row:
+            return row[0] or "—", row[1] or "—", row[2] or "idle"
+    except Exception:
+        pass
+    return "—", "—", "idle"
+
+def plan_label(user_id):
+    plan, end = get_subscription(user_id)
+    label = {"aura_start": "Старт", "aura_pro": "Про"}.get(plan, "Бесплатный")
+    return label + (f" до {end.strftime('%d.%m.%Y')}" if end else "")
+
+async def notify_owner(title, user_id=0, feature="", details=""):
+    try:
+        name, username, step = get_user_identity(user_id) if user_id else ("—", "—", "—")
+        text = (f"{title}\n\nПлатформа: {PLATFORM_NAME}\nПользователь: {name}\nUsername: {username}\n"
+                f"ID: {user_id or '—'}\nТариф: {plan_label(user_id) if user_id else '—'}\n"
+                f"Функция/шаг: {feature or step}\nВремя: {datetime.now().strftime('%d.%m.%Y %H:%M')}")
+        if details:
+            text += f"\n\nДетали:\n{details[:2500]}"
+        await send_message(OWNER_ID, text)
+    except Exception as e:
+        logging.error(f"Не удалось уведомить владельца: {e}")
+
+async def open_support(chat_id, user_id):
+    set_step(user_id, "support")
+    await send_message(chat_id,
+        "💬 Поддержка Aura\n\nОпиши, что произошло: какая функция не сработала, что ты нажимала и что увидела. "
+        "Сообщение сразу придёт владельцу проекта.",
+        back_button())
+
+async def process_support_message(chat_id, user_id, text):
+    set_step(user_id, "idle")
+    await notify_owner("🆘 Новое обращение в поддержку Aura", user_id, "support", text)
+    await send_message(chat_id,
+        "✅ Сообщение отправлено. Мы проверим проблему и постараемся отреагировать как можно быстрее.",
+        main_menu_buttons())
+
 
 # ========== ОБРАБОТКА СООБЩЕНИЙ ==========
 WELCOME_TEXT = """🔮 Привет, {name}!
@@ -618,6 +999,10 @@ async def process_command(chat_id, user_id, text, username="", first_name=""):
     step = user.get("step", "")
 
     # Обработка шагов
+    if step == "support":
+        await process_support_message(chat_id, user_id, text)
+        return
+
     if step == "review":
         set_step(user_id, "idle")
         save_review(user_id, username, first_name, text)
@@ -652,6 +1037,7 @@ async def process_command(chat_id, user_id, text, username="", first_name=""):
         add_psycho_message(user_id, "assistant", response)
         if access == "ok":
             increment_limit(user_id, "psycho_messages")
+        asyncio.create_task(asyncio.to_thread(sheets_sync_user, user_id, first_name, username))
         await send_message(chat_id, response, psycho_buttons())
         return
 
@@ -670,8 +1056,13 @@ async def process_command(chat_id, user_id, text, username="", first_name=""):
 
     if step in step_map:
         feature = step if step in ("matrix", "forecast", "natal", "money_code", "taro_photo", "compat_photo") else "general"
-        access = await check_access(user_id, feature)
-        if access not in ("ok", "pro"):
+        plan_now, _ = get_subscription(user_id)
+        use_one_time = feature in FEATURE_TO_PRODUCT and plan_now != "aura_pro" and get_one_time_credit(user_id, feature) > 0
+        access = "one_time" if use_one_time else await check_access(user_id, feature)
+        if access not in ("ok", "pro", "one_time"):
+            if feature in FEATURE_TO_PRODUCT:
+                await send_one_time_offer(chat_id, feature)
+                return
             await handle_limit_msg(chat_id, access)
             return
         system, prompt_tpl = step_map[step]
@@ -681,7 +1072,12 @@ async def process_command(chat_id, user_id, text, username="", first_name=""):
         result = await generate_text(system, prompt)
         if access == "ok":
             increment_limit(user_id, "requests")
-        await send_message(chat_id, result, back_button())
+            asyncio.create_task(asyncio.to_thread(sheets_sync_user, user_id, first_name, username))
+        elif access == "one_time":
+            if not consume_one_time_credit(user_id, feature):
+                await notify_owner("⚠️ Ошибка списания разового разбора", user_id, feature, "Результат создан, но кредит не найден")
+        offer_note, offer_buttons = build_result_offer(user_id, feature, used_one_time=use_one_time)
+        await send_message(chat_id, result + offer_note, offer_buttons)
         return
 
     await send_message(chat_id, "Выбери действие из меню 👇", main_menu_buttons())
@@ -723,6 +1119,11 @@ async def process_callback(chat_id, user_id, payload, first_name=""):
             f"Матрица, Прогноз, Натальная карта\n"
             f"Денежный код, все фото-анализы\n"
             f"Персональный гороскоп каждое утро\n\n"
+            f"✨ Разовые разборы без подписки\n"
+            f"Денежный код — 199 ₽\n"
+            f"Матрица судьбы — 249 ₽\n"
+            f"Прогноз на год — 299 ₽\n"
+            f"Натальная карта — 349 ₽\n\n"
             f"🌙 Всем бесплатно: лунный календарь каждое утро\n\n"
             f"🎁 Бесплатно: 15 запросов + 30 сообщений психологу{current}",
             [
@@ -733,17 +1134,28 @@ async def process_callback(chat_id, user_id, payload, first_name=""):
         )
         return
 
-    if payload in ("pay_start", "pay_pro"):
-        plan = "aura_start" if payload == "pay_start" else "aura_pro"
+    if payload in ("pay_start", "pay_pro", "pay_year") or payload.startswith("pay_once_"):
+        plan = {"pay_start":"aura_start", "pay_pro":"aura_pro", "pay_year":"aura_pro_year"}.get(payload)
+        if not plan:
+            plan = payload[4:]
+        if plan not in ("aura_start", "aura_pro", "aura_pro_year") and plan not in ONE_TIME_PRODUCTS:
+            await send_message(chat_id, "Не удалось определить покупку. Открой меню и попробуй снова.", back_button())
+            return
         try:
             payment = await create_payment(user_id, plan)
             pay_url = payment.get("confirmation", {}).get("confirmation_url", "")
             payment_id = payment.get("id", "")
             if pay_url and payment_id:
                 save_pending_payment(payment_id, user_id, plan)
-                plan_name = "Старт 190 руб" if plan == "aura_start" else "Про 390 руб"
+                if plan in ONE_TIME_PRODUCTS:
+                    product = ONE_TIME_PRODUCTS[plan]
+                    plan_name = f"{product['amount']} ₽ — {product['title']}"
+                    payment_note = "Это разовая покупка без автопродления. После оплаты будет доступен один полный разбор."
+                else:
+                    plan_name = {"aura_start":"Старт 190 ₽", "aura_pro":"Про 390 ₽", "aura_pro_year":"Про на год 2 990 ₽"}[plan]
+                    payment_note = "Подписка активируется автоматически после подтверждения оплаты."
                 await send_message(chat_id,
-                    f"💳 Оплата тарифа {plan_name}\n\nНажми кнопку для оплаты.\nПодписка активируется автоматически! ✅",
+                    f"💳 {plan_name}\n\nНажми кнопку для оплаты.\n{payment_note}",
                     [[{"type": "link", "text": f"💳 Оплатить", "url": pay_url}],
                      [{"type": "callback", "text": "🔙 В меню", "payload": "back_menu"}]]
                 )
@@ -751,7 +1163,12 @@ async def process_callback(chat_id, user_id, payload, first_name=""):
                 await send_message(chat_id, f"❌ Ошибка при создании платежа. Обратись в поддержку: {SUPPORT_URL}", back_button())
         except Exception as e:
             logging.error(f"Ошибка платежа: {e}")
+            await notify_owner("⚠️ Ошибка создания платежа", user_id, plan, str(e))
             await send_message(chat_id, f"❌ Ошибка платежа. Обратись в поддержку: {SUPPORT_URL}", back_button())
+        return
+
+    if payload == "support":
+        await open_support(chat_id, user_id)
         return
 
     if payload == "review":
@@ -841,8 +1258,14 @@ async def process_callback(chat_id, user_id, payload, first_name=""):
     if payload in pro_features and payload not in ("taro_photo", "compat_photo"):
         access = await check_access(user_id, payload)
         if access not in ("ok", "pro"):
-            await handle_limit_msg(chat_id, access)
-            return
+            if payload in FEATURE_TO_PRODUCT and get_one_time_credit(user_id, payload) > 0:
+                access = "one_time"
+            elif payload in FEATURE_TO_PRODUCT:
+                await send_one_time_offer(chat_id, payload)
+                return
+            else:
+                await handle_limit_msg(chat_id, access)
+                return
 
     if payload in step_buttons:
         set_step(user_id, payload)
@@ -891,9 +1314,12 @@ async def process_photo(chat_id, user_id, photo_url):
         set_step(user_id, "idle")
         if access == "ok":
             increment_limit(user_id, "requests" if limit_field == "requests" else limit_field)
+            name, uname, _ = get_user_identity(user_id)
+            asyncio.create_task(asyncio.to_thread(sheets_sync_user, user_id, name, uname if uname != "—" else ""))
         await send_message(chat_id, result, back_button())
     except Exception as e:
         logging.error(f"Ошибка фото-анализа: {e}")
+        await notify_owner("⚠️ Ошибка фото-анализа", user_id, step, str(e))
         await send_message(chat_id, "Ошибка анализа фото. Попробуй ещё раз.", back_button())
 
 # ========== FASTAPI WEBHOOK ==========
@@ -908,7 +1334,7 @@ async def startup():
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.post(f"{MAX_API}/subscriptions",
-                json={"url": WEBHOOK_URL}, headers=headers)
+                json={"url": WEBHOOK_URL, "update_types": ["message_created", "message_callback", "bot_started", "bot_stopped"]}, headers=headers)
             logging.info(f"Webhook регистрация: {r.json()}")
     except Exception as e:
         logging.error(f"Ошибка регистрации webhook: {e}")
@@ -1066,6 +1492,53 @@ async def payment_success():
 async def health():
     return {"status": "ok"}
 
+
+# ========== ФИРМЕННЫЕ ВИЗУАЛЫ КАНАЛА ==========
+VISUAL_DIR = "/tmp/aura_channel_visuals"
+VISUAL_DAYS = {0: "Планы недели", 2: "Отношения", 4: "Выбор и Таро", 6: "Итоги недели"}
+
+def create_channel_visual(dt, rubric, title):
+    if rubric != "value" or dt.weekday() not in VISUAL_DAYS:
+        return None
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        os.makedirs(VISUAL_DIR, exist_ok=True)
+        path = os.path.join(VISUAL_DIR, f"{dt.strftime('%Y%m%d')}_{rubric}.png")
+        if os.path.exists(path):
+            return path
+        img = Image.new("RGB", (1200, 1200), (24, 10, 48))
+        draw = ImageDraw.Draw(img)
+        for y in range(1200):
+            p = y / 1200
+            draw.line((0, y, 1200, y), fill=(int(24+30*p), int(10+15*p), int(48+55*p)))
+        draw.ellipse((760, -120, 1320, 440), fill=(92, 48, 145))
+        draw.ellipse((-180, 760, 380, 1320), fill=(63, 32, 110))
+        try:
+            font_big = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 76)
+            font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 34)
+            font_brand = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 30)
+        except Exception:
+            font_big = font_small = font_brand = ImageFont.load_default()
+        draw.text((86, 86), "АУРА — ПСИХОЛОГИЯ", font=font_brand, fill=(220, 195, 255))
+        words = title.split()
+        lines=[]; line=""
+        for word in words:
+            test=(line+" "+word).strip()
+            if draw.textlength(test, font=font_big) > 980 and line:
+                lines.append(line); line=word
+            else: line=test
+        if line: lines.append(line)
+        y=390
+        for line in lines[:4]:
+            draw.text((86,y), line, font=font_big, fill=(255,255,255)); y+=98
+        draw.text((86, 1035), "Практика • самопознание • личный разбор", font=font_small, fill=(220, 205, 235))
+        img.save(path, quality=94)
+        return path
+    except Exception as e:
+        logging.error(f"Визуал канала: {e}")
+        return None
+
+
 # ========== КАНАЛ MAX — PREMIUM FUNNEL ==========
 MAX_CHANNEL_ID = -75554451158515
 MAX_BOT_LINK = "https://max.ru/id232007136009_bot"
@@ -1113,17 +1586,34 @@ def channel_deep_link(payload):
 def native_channel_button(text, payload):
     return [[{"type": "link", "text": text[:40], "url": channel_deep_link(payload)}]]
 
-async def send_to_channel(text, button_text, start_payload):
+async def send_to_channel(text, button_text, start_payload, image_path=None):
     headers = {"Authorization": MAX_TOKEN, "Content-Type": "application/json"}
-    payload = {
-        "text": text[:4000],
-        "attachments": [{
-            "type": "inline_keyboard",
-            "payload": {"buttons": native_channel_button(button_text, start_payload)}
-        }]
-    }
+    attachments = []
+    if image_path and os.path.exists(image_path):
+        try:
+            async with httpx.AsyncClient(timeout=45) as client:
+                meta = await client.post(f"{MAX_API}/uploads?type=image", headers={"Authorization": MAX_TOKEN})
+                meta.raise_for_status()
+                upload_url = meta.json().get("url")
+                with open(image_path, "rb") as fh:
+                    uploaded = await client.post(upload_url, files={"data": ("aura.png", fh, "image/png")})
+                uploaded.raise_for_status()
+                data = uploaded.json()
+                token = data.get("token") or data.get("payload", {}).get("token")
+                if token:
+                    attachments.append({"type": "image", "payload": {"token": token}})
+        except Exception as e:
+            logging.error(f"Канал MAX: визуал не отправлен: {e}")
+    attachments.append({
+        "type": "inline_keyboard",
+        "payload": {"buttons": native_channel_button(button_text, start_payload)}
+    })
+    payload = {"text": text[:4000], "attachments": attachments}
     async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post(f"{MAX_API}/messages", params={"chat_id": MAX_CHANNEL_ID, "disable_link_preview": "true"}, json=payload, headers=headers)
+        r = await client.post(
+            f"{MAX_API}/messages?chat_id={MAX_CHANNEL_ID}&disable_link_preview=true",
+            json=payload, headers=headers
+        )
         logging.info(f"Канал MAX: {r.status_code}")
         if r.status_code >= 400:
             raise RuntimeError(f"MAX channel error {r.status_code}: {r.text[:500]}")
@@ -1195,12 +1685,14 @@ async def publish_channel_slot(dt, rubric):
     text = await generate_channel_post(dt, rubric)
     button_text, start_payload = WEEKLY_FUNNEL[dt.weekday()][rubric]
     try:
-        await send_to_channel(text, button_text, start_payload)
+        visual = create_channel_visual(dt, rubric, WEEKLY_FUNNEL[dt.weekday()]["theme"])
+        await send_to_channel(text, button_text, start_payload, visual)
         save_channel_post(key, rubric, extract_topic(text), text, "sent")
         return True
     except Exception as e:
         save_channel_post(key, rubric, extract_topic(text), text, "failed")
         logging.exception(f"Ошибка публикации {key}: {e}")
+        await notify_owner("⚠️ Не вышел пост в MAX-канале", 0, rubric, f"{key}: {e}")
         return False
 
 async def publish_channel_intro():
@@ -1229,7 +1721,7 @@ async def publish_channel_intro():
 async def channel_posting_loop():
     await asyncio.sleep(5)
     while True:
-        now = datetime.utcnow() + timedelta(hours=3)
+        now = datetime.now(MOSCOW)
         try:
             for (hour, minute), rubric in CHANNEL_SLOTS.items():
                 slot = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
