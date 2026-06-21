@@ -19,7 +19,14 @@ MAX_TOKEN = "f9LHodD0cOKQMa6aUXu2uNfUQu8nnfZcgZ7c0X8aUUwrz1XCbBY18pNaP0FDdHV7s89
 MAX_API = "https://platform-api.max.ru"
 OPENAI_KEY = "sk-mfvVI3QN2uQvXPlhMkAeUUzmbjK5aQzj"
 CLAUDE_KEY = "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"
-OWNER_ID = 549639607
+TELEGRAM_OWNER_ID = 549639607  # Не используется для авторизации в MAX
+MAX_OWNER_ID = int(os.getenv("MAX_OWNER_ID", "0") or 0)
+MAX_OWNER_USERNAME = os.getenv("MAX_OWNER_USERNAME", "").lstrip("@").lower()
+
+def is_owner(user_id, username=""):
+    if MAX_OWNER_ID and int(user_id or 0) == MAX_OWNER_ID:
+        return True
+    return bool(MAX_OWNER_USERNAME and (username or "").lstrip("@").lower() == MAX_OWNER_USERNAME)
 SUPPORT_URL = "https://t.me/Boss023rus"
 
 ONE_TIME_PRODUCTS = {
@@ -31,6 +38,8 @@ ONE_TIME_PRODUCTS = {
 FEATURE_TO_PRODUCT = {v["feature"]: k for k, v in ONE_TIME_PRODUCTS.items()}
 PLATFORM_NAME = "MAX"
 MOSCOW = ZoneInfo("Europe/Moscow")
+BOT_LINK = "https://max.ru/id232007136009_bot"
+CHANNEL_LINK = "https://max.ru/join/FGrz60vuvjsYfQoPyUFx7LSx09Pr5kknakutA-mWc1Q"
 
 # Лимиты
 FREE_REQUESTS = 5
@@ -145,7 +154,7 @@ async def send_message(chat_id, text, buttons=None):
     if buttons:
         payload["attachments"] = [{"type": "inline_keyboard", "payload": {"buttons": buttons}}]
     async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post(f"{MAX_API}/messages?chat_id={chat_id}", json=payload, headers=headers)
+        r = await client.post(f"{MAX_API}/messages?chat_id={chat_id}&disable_link_preview=true", json=payload, headers=headers)
         logging.info(f"send_message chat_id={chat_id}: {r.status_code}")
         return r.json()
 
@@ -164,28 +173,47 @@ async def get_photo(photo_url):
 # ========== КНОПКИ ==========
 def main_menu_buttons():
     return [
-        [{"type": "callback", "text": "🔢 Нумерология", "payload": "numerology"},
-         {"type": "callback", "text": "🃏 Таро", "payload": "taro"}],
-        [{"type": "callback", "text": "💤 Сны", "payload": "dreams"},
-         {"type": "callback", "text": "🌈 Аура", "payload": "aura"}],
-        [{"type": "callback", "text": "🌟 Гороскоп", "payload": "horoscope"},
-         {"type": "callback", "text": "❤️ Совместимость", "payload": "compatibility"}],
-        [{"type": "callback", "text": "🧠 AI-Психолог", "payload": "psycho"},
-         {"type": "callback", "text": "📔 Личный дневник", "payload": "diary"}],
-        [{"type": "callback", "text": "🖐 Хиромантия", "payload": "chiromancy"},
-         {"type": "callback", "text": "😊 Физиогномика", "payload": "physio"}],
-        [{"type": "callback", "text": "✍️ Графология", "payload": "grapho"}],
-        [{"type": "callback", "text": "🔥 ПРО ФУНКЦИИ 🔥", "payload": "noop"}],
-        [{"type": "callback", "text": "🌌 Матрица судьбы", "payload": "matrix"},
-         {"type": "callback", "text": "📅 Прогноз", "payload": "forecast"}],
-        [{"type": "callback", "text": "♈ Натальная карта", "payload": "natal"},
-         {"type": "callback", "text": "💰 Денежный код", "payload": "money_code"}],
-        [{"type": "callback", "text": "🃏 Таро по фото", "payload": "taro_photo"},
-         {"type": "callback", "text": "👫 Совместимость фото", "payload": "compat_photo"}],
-        [{"type": "callback", "text": "💎 Тарифы и оплата", "payload": "tariffs"}],
-        [{"type": "callback", "text": "⭐️ Оставить отзыв", "payload": "review"}],
+        [{"type": "callback", "text": "🔮 Разобрать ситуацию", "payload": "cat_situation"}],
+        [{"type": "callback", "text": "❤️ Отношения", "payload": "cat_love"},
+         {"type": "callback", "text": "💰 Деньги", "payload": "cat_money"}],
+        [{"type": "callback", "text": "🧠 Психолог", "payload": "psycho"},
+         {"type": "callback", "text": "📔 Дневник", "payload": "diary"}],
+        [{"type": "callback", "text": "✨ Узнать себя", "payload": "cat_self"}],
+        [{"type": "callback", "text": "🌟 Мой день", "payload": "my_day"},
+         {"type": "callback", "text": "👤 Профиль", "payload": "profile"}],
+        [{"type": "callback", "text": "💎 Тарифы", "payload": "tariffs"},
+         {"type": "callback", "text": "🎁 Пригласить", "payload": "referral"}],
+        [{"type": "callback", "text": "⭐️ Отзыв", "payload": "review"}],
         [{"type": "callback", "text": "💬 Поддержка", "payload": "support"}],
     ]
+
+def category_buttons(category):
+    menus = {
+        "situation": [
+            [{"type":"callback","text":"🃏 Таро на ситуацию","payload":"taro"}],
+            [{"type":"callback","text":"💤 Толкование сна","payload":"dreams"}],
+            [{"type":"callback","text":"📅 Прогноз на период","payload":"forecast"}],
+        ],
+        "love": [
+            [{"type":"callback","text":"❤️ Совместимость по датам","payload":"compatibility"}],
+            [{"type":"callback","text":"👫 Совместимость по фото","payload":"compat_photo"}],
+            [{"type":"callback","text":"🃏 Таро на отношения","payload":"taro"}],
+        ],
+        "money": [
+            [{"type":"callback","text":"💰 Денежный код","payload":"money_code"}],
+            [{"type":"callback","text":"🌌 Матрица судьбы","payload":"matrix"}],
+            [{"type":"callback","text":"📊 Прогноз на год","payload":"forecast"}],
+        ],
+        "self": [
+            [{"type":"callback","text":"🔢 Нумерология","payload":"numerology"}],
+            [{"type":"callback","text":"🌈 Энергия по дате","payload":"aura"}],
+            [{"type":"callback","text":"🖐 Хиромантия","payload":"chiromancy"}],
+            [{"type":"callback","text":"😊 Впечатление по фото","payload":"physio"}],
+            [{"type":"callback","text":"✍️ Графология","payload":"grapho"}],
+            [{"type":"callback","text":"♈ Натальная карта","payload":"natal"}],
+        ],
+    }
+    return menus.get(category, []) + [[{"type":"callback","text":"🔙 В меню","payload":"back_menu"}]]
 
 def back_button():
     return [[{"type": "callback", "text": "🔙 В меню", "payload": "back_menu"}]]
@@ -199,6 +227,7 @@ def upgrade_buttons(plan="any"):
     return [
         [{"type": "callback", "text": "🟢 Старт — 190 руб", "payload": "pay_start"}],
         [{"type": "callback", "text": "🔥 Про — 390 руб", "payload": "pay_pro"}],
+        [{"type": "callback", "text": "💜 Про на год — 2 990 руб", "payload": "pay_year"}],
         [{"type": "callback", "text": "🔙 В меню", "payload": "back_menu"}]
     ]
 
@@ -268,6 +297,13 @@ def init_db():
         referred_user_id INTEGER NOT NULL,
         referrer_id INTEGER NOT NULL,
         rewarded_at TEXT NOT NULL
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS user_profiles (
+        user_id INTEGER PRIMARY KEY,
+        birth_date TEXT DEFAULT '',
+        source TEXT DEFAULT '',
+        referrer_id INTEGER,
+        stopped INTEGER DEFAULT 0
     )""")
     c.execute("""CREATE TABLE IF NOT EXISTS reviews (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -924,7 +960,10 @@ async def notify_owner(title, user_id=0, feature="", details=""):
                 f"Функция/шаг: {feature or step}\nВремя: {datetime.now().strftime('%d.%m.%Y %H:%M')}")
         if details:
             text += f"\n\nДетали:\n{details[:2500]}"
-        await send_message(OWNER_ID, text)
+        if MAX_OWNER_ID:
+            await send_message(MAX_OWNER_ID, text)
+        else:
+            logging.warning("MAX_OWNER_ID не задан — уведомление владельцу не отправлено: %s", text[:200])
     except Exception as e:
         logging.error(f"Не удалось уведомить владельца: {e}")
 
@@ -943,31 +982,34 @@ async def process_support_message(chat_id, user_id, text):
         main_menu_buttons())
 
 
+def get_profile_text(user_id):
+    plan, end = get_subscription(user_id)
+    lim = get_limits(user_id)
+    with sqlite3.connect(DB) as conn:
+        row = conn.execute("SELECT birth_date FROM user_profiles WHERE user_id=?", (user_id,)).fetchone()
+    birth = row[0] if row and row[0] else ""
+    plan_name = {"aura_start": "🟢 Аура Старт", "aura_pro": "🔥 Аура Про"}.get(plan, "Бесплатный")
+    until = f" до {end.strftime('%d.%m.%Y')}" if end else ""
+    return (f"👤 Твой профиль\n\nТариф: {plan_name}{until}\n"
+            f"Дата рождения: {birth or 'не указана'}\n"
+            f"Бесплатных разборов использовано: {lim['requests']} из {FREE_REQUESTS}\n"
+            f"Сообщений психологу: {lim['psycho']}")
+
+def referral_buttons(user_id):
+    link = f"{BOT_LINK}?start=ref_{user_id}"
+    return [[{"type":"link","text":"📨 Отправить приглашение","url":link}],
+            [{"type":"callback","text":"🔙 В меню","payload":"back_menu"}]]
+
 # ========== ОБРАБОТКА СООБЩЕНИЙ ==========
-WELCOME_TEXT = """🔮 Привет, {name}!
+WELCOME_TEXT = """🔮 {name}, добро пожаловать в AuraMAX.
 
-Я AuraBot — эзотерик и психолог в одном. Уже чувствую твою энергию 👀
+Я помогу получить не общий текст, а личную подсказку под твою ситуацию: отношения, деньги, предназначение или внутреннее состояние.
 
-Что умею:
-🔢 Нумерология, 🃏 Таро, 💤 Сны, 🌈 Аура
-🌟 Гороскоп, ❤️ Совместимость
-🧠 AI-Психолог с памятью истории
-📔 Личный дневник голосом
-
-🔥 На тарифе Про:
-🌌 Матрица судьбы, ♈ Натальная карта
-📅 Прогноз, 💰 Денежный код
-🖐 Хиромантия, 😊 Физиогномика, ✍️ Графология
-👫 Совместимость по фото, 🃏 Таро по фото карт
-⭐️ Персональный гороскоп по дате рождения каждое утро
-
-🌙 Всем каждое утро: лунный календарь
-
-🎁 Бесплатно: 15 запросов + 20 сообщений психологу"""
+🎁 Начни с бесплатного разбора — выбери, что волнует тебя сейчас."""
 
 async def handle_limit_msg(chat_id, access):
     if access == "limit_free":
-        await send_message(chat_id, "🚫 Бесплатные запросы закончились (15 из 15).\n\nОформи подписку:", upgrade_buttons())
+        await send_message(chat_id, "🚫 Бесплатные разборы закончились (5 из 5).\n\nОформи подписку:", upgrade_buttons())
     elif access == "limit_psycho_free":
         await send_message(chat_id, "🚫 Бесплатные сообщения психологу закончились.\n\nОформи подписку:", upgrade_buttons())
     elif access == "limit_psycho_start":
@@ -983,7 +1025,23 @@ async def process_command(chat_id, user_id, text, username="", first_name=""):
     get_user(user_id, username, first_name)
     name = first_name or "друг"
 
-    if text == "/publish_channel_intro" and user_id == OWNER_ID:
+    if text == "/myid":
+        await send_message(
+            chat_id,
+            f"Ваш MAX user_id: {user_id}\nUsername: @{username}" if username else f"Ваш MAX user_id: {user_id}",
+            main_menu_buttons()
+        )
+        return
+
+    if text == "/publish_channel_intro":
+        if not is_owner(user_id, username):
+            await send_message(
+                chat_id,
+                f"⛔ Команда доступна владельцу.\n\nВаш MAX user_id: {user_id}\n"
+                "Укажите его в переменной окружения MAX_OWNER_ID и перезапустите сервис.",
+                main_menu_buttons()
+            )
+            return
         ok = await publish_channel_intro()
         await send_message(chat_id, "✅ Продающий пост опубликован. Теперь его можно закрепить в канале." if ok else "❌ Не удалось опубликовать пост. Проверь журнал сервиса.", main_menu_buttons())
         return
@@ -999,6 +1057,26 @@ async def process_command(chat_id, user_id, text, username="", first_name=""):
     step = user.get("step", "")
 
     # Обработка шагов
+    if step == "my_day_birth":
+        import re
+        m = re.search(r"\b(0?[1-9]|[12]\d|3[01])[.\-/](0?[1-9]|1[0-2])[.\-/]((?:19|20)\d{2})\b", text or "")
+        if not m:
+            await send_message(chat_id, "Не смогла распознать дату. Напиши, например: 15.03.1990", back_button())
+            return
+        try:
+            birth = datetime(int(m.group(3)), int(m.group(2)), int(m.group(1))).strftime("%d.%m.%Y")
+        except ValueError:
+            await send_message(chat_id, "Проверь дату и напиши в формате ДД.ММ.ГГГГ", back_button())
+            return
+        with sqlite3.connect(DB) as conn:
+            conn.execute("INSERT OR IGNORE INTO user_profiles (user_id) VALUES (?)", (user_id,))
+            conn.execute("UPDATE user_profiles SET birth_date=? WHERE user_id=?", (birth, user_id))
+            conn.execute("UPDATE users SET birth_date=? WHERE user_id=?", (birth, user_id))
+        set_step(user_id, "idle")
+        result = await generate_text(HOROSCOPE_SYSTEM, f"Дата рождения: {birth}. Сегодня {datetime.now(MOSCOW).strftime('%d.%m.%Y')}. Дай персональную подсказку: энергия дня, отношения, деньги, главное действие и вечерняя практика. Не обещай неизбежных событий.")
+        await send_message(chat_id, "🌟 Твой день\n\n" + result, back_button())
+        return
+
     if step == "support":
         await process_support_message(chat_id, user_id, text)
         return
@@ -1088,6 +1166,35 @@ async def process_callback(chat_id, user_id, payload, first_name=""):
     if payload == "noop":
         return
 
+    if payload.startswith("cat_"):
+        cat = payload.split("_", 1)[1]
+        titles = {"situation":"🔮 Разобрать ситуацию", "love":"❤️ Отношения", "money":"💰 Деньги и реализация", "self":"✨ Узнать себя"}
+        await send_message(chat_id, titles.get(cat, "Выбери направление"), category_buttons(cat))
+        return
+
+    if payload == "profile":
+        await send_message(chat_id, get_profile_text(user_id), back_button())
+        return
+
+    if payload == "referral":
+        await send_message(chat_id,
+            "🎁 Пригласи близкого человека\n\nПосле его первой успешной оплаты тебе начислят 30 дней Аура Про.",
+            referral_buttons(user_id))
+        return
+
+    if payload == "my_day":
+        with sqlite3.connect(DB) as conn:
+            row = conn.execute("SELECT birth_date FROM user_profiles WHERE user_id=?", (user_id,)).fetchone()
+        birth = row[0] if row and row[0] else ""
+        if not birth:
+            set_step(user_id, "my_day_birth")
+            await send_message(chat_id, "🌟 Мой день\n\nВведи дату рождения в формате ДД.ММ.ГГГГ — я сохраню её и подготовлю личную подсказку.", back_button())
+            return
+        await send_message(chat_id, "⏳ Собираю личную подсказку...")
+        result = await generate_text(HOROSCOPE_SYSTEM, f"Дата рождения: {birth}. Сегодня {datetime.now(MOSCOW).strftime('%d.%m.%Y')}. Дай персональную подсказку: энергия дня, отношения, деньги, главное действие и короткая вечерняя практика. Не обещай неизбежных событий.")
+        await send_message(chat_id, "🌟 Твой день\n\n" + result, back_button())
+        return
+
     if payload == "back_menu":
         set_step(user_id, "idle")
         name = first_name or "друг"
@@ -1125,10 +1232,11 @@ async def process_callback(chat_id, user_id, payload, first_name=""):
             f"Прогноз на год — 299 ₽\n"
             f"Натальная карта — 349 ₽\n\n"
             f"🌙 Всем бесплатно: лунный календарь каждое утро\n\n"
-            f"🎁 Бесплатно: 15 запросов + 30 сообщений психологу{current}",
+            f"🎁 Бесплатно: 5 разборов + 15 сообщений психологу{current}",
             [
                 [{"type": "callback", "text": "🟢 Старт — 190 руб", "payload": "pay_start"}],
                 [{"type": "callback", "text": "🔥 Про — 390 руб", "payload": "pay_pro"}],
+                [{"type": "callback", "text": "💜 Про на год — 2 990 руб", "payload": "pay_year"}],
                 [{"type": "callback", "text": "🔙 В меню", "payload": "back_menu"}]
             ]
         )
@@ -1367,6 +1475,17 @@ async def webhook(request: Request):
                 or ""
             ).strip()
             get_user(user_id, username, first_name)
+            with sqlite3.connect(DB) as conn:
+                conn.execute("INSERT OR IGNORE INTO user_profiles (user_id) VALUES (?)", (user_id,))
+                if start_payload.startswith("ref_"):
+                    try:
+                        referrer_id = int(start_payload.split("_", 1)[1])
+                        if referrer_id != user_id:
+                            conn.execute("UPDATE user_profiles SET referrer_id=COALESCE(referrer_id, ?) WHERE user_id=?", (referrer_id, user_id))
+                    except (ValueError, TypeError):
+                        logging.warning("Некорректный реферальный payload: %s", start_payload)
+                elif start_payload:
+                    conn.execute("UPDATE user_profiles SET source=COALESCE(NULLIF(source,''), ?) WHERE user_id=?", (start_payload, user_id))
             set_step(user_id, "idle")
             plan, _ = get_subscription(user_id)
             asyncio.create_task(asyncio.to_thread(sheets_log_visit, user_id, first_name, username, plan))
@@ -1377,7 +1496,7 @@ async def webhook(request: Request):
                 "channel_psycho": "psycho",
                 "channel_love": "compatibility",
                 "channel_self": "numerology",
-                "channel_day": "horoscope",
+                "channel_day": "my_day",
                 "channel_diary": "diary",
                 "channel_dreams": "dreams",
                 "channel_matrix": "matrix",
@@ -1401,7 +1520,7 @@ async def webhook(request: Request):
                     "channel_psycho": "🧠 Опиши ситуацию одним сообщением. Я помогу отделить факты, чувства и тревожные мысли.",
                     "channel_love": "❤️ Введи имена и даты рождения двух людей — посмотрим сильные стороны и зоны роста отношений.",
                     "channel_self": "🔢 Введи дату рождения — начнём личный нумерологический разбор.",
-                    "channel_day": "🌟 Напиши свой знак зодиака — подготовлю подсказку на сегодня.",
+                    "channel_day": "🌟 Открою персональную подсказку на сегодня по твоей дате рождения.",
                     "channel_diary": "📔 Запиши, что сейчас на душе. Дневник сохранит мысль и задаст один бережный вопрос.",
                     "channel_dreams": "🌙 Опиши сон подробно: образы, людей и свои чувства.",
                     "channel_matrix": "🌌 Введи дату рождения — откроем разбор предназначения и жизненных задач.",
