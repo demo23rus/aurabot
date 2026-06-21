@@ -20,7 +20,7 @@ MAX_API = "https://platform-api.max.ru"
 OPENAI_KEY = "sk-mfvVI3QN2uQvXPlhMkAeUUzmbjK5aQzj"
 CLAUDE_KEY = "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"
 TELEGRAM_OWNER_ID = 549639607  # Не используется для авторизации в MAX
-MAX_OWNER_ID = int(os.getenv("MAX_OWNER_ID", "0") or 0)
+MAX_OWNER_ID = int(os.getenv("MAX_OWNER_ID", "214128371") or 214128371)
 MAX_OWNER_USERNAME = os.getenv("MAX_OWNER_USERNAME", "").lstrip("@").lower()
 
 def is_owner(user_id, username=""):
@@ -1038,7 +1038,7 @@ async def process_command(chat_id, user_id, text, username="", first_name=""):
             await send_message(
                 chat_id,
                 f"⛔ Команда доступна владельцу.\n\nВаш MAX user_id: {user_id}\n"
-                "Укажите его в переменной окружения MAX_OWNER_ID и перезапустите сервис.",
+                f"Настроенный MAX_OWNER_ID: {MAX_OWNER_ID}. Проверьте, что запущена актуальная версия файла.",
                 main_menu_buttons()
             )
             return
