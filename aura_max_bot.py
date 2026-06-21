@@ -21,6 +21,7 @@ OPENAI_KEY = "sk-mfvVI3QN2uQvXPlhMkAeUUzmbjK5aQzj"
 CLAUDE_KEY = "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"
 TELEGRAM_OWNER_ID = 549639607  # Не используется для авторизации в MAX
 MAX_OWNER_ID = int(os.getenv("MAX_OWNER_ID", "214128371") or 214128371)
+MAX_OWNER_CHAT_ID = int(os.getenv("MAX_OWNER_CHAT_ID", "506244977") or 506244977)
 MAX_OWNER_USERNAME = os.getenv("MAX_OWNER_USERNAME", "").lstrip("@").lower()
 
 def is_owner(user_id, username=""):
@@ -54,6 +55,7 @@ YOOKASSA_SECRET = "live_-RKE9nsi8wZiM-5f00z78E84OYSi3M0Dj9w_-pE0Mvw"
 # ========== GOOGLE SHEETS — КОМПАКТНАЯ КОММЕРЧЕСКАЯ АНАЛИТИКА ==========
 GOOGLE_CREDS_PATH = "/root/google_credentials.json"
 SPREADSHEET_NAME = "PostGenius Users"
+GOOGLE_SPREADSHEET_ID = os.getenv("GOOGLE_SPREADSHEET_ID", "").strip()
 USERS_SHEET_NAME = "Aura MAX"
 SALES_SHEET_NAME = "Продажи Aura"
 
@@ -61,7 +63,15 @@ USERS_HEADERS = ["Последнее посещение", "ID", "Имя", "Usern
 SALES_HEADERS = ["Дата", "Платформа", "ID", "Имя", "Тариф", "Сумма", "Подписка до"]
 
 def _open_spreadsheet():
-    scopes = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    # При заданном GOOGLE_SPREADSHEET_ID таблица открывается напрямую через Sheets API.
+    # Это не требует поиска файла по названию через Google Drive API.
+    if GOOGLE_SPREADSHEET_ID:
+        scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+        creds = Credentials.from_service_account_file(GOOGLE_CREDS_PATH, scopes=scopes)
+        gc = gspread.authorize(creds)
+        return gc.open_by_key(GOOGLE_SPREADSHEET_ID)
+
+    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     creds = Credentials.from_service_account_file(GOOGLE_CREDS_PATH, scopes=scopes)
     gc = gspread.authorize(creds)
     return gc.open(SPREADSHEET_NAME)
@@ -185,6 +195,9 @@ async def send_message(chat_id, text, buttons=None):
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(f"{MAX_API}/messages?chat_id={chat_id}&disable_link_preview=true", json=payload, headers=headers)
         logging.info(f"send_message chat_id={chat_id}: {r.status_code}")
+        if r.status_code >= 400:
+            logging.error("MAX send_message error chat_id=%s status=%s body=%s", chat_id, r.status_code, r.text[:1000])
+            r.raise_for_status()
         return r.json()
 
 async def get_photo(photo_url):
@@ -268,6 +281,10 @@ def psycho_buttons():
 
 # ========== БАЗА ДАННЫХ ==========
 DB = "/root/aura_max.db"
+
+def db_connect():
+    """Единое подключение к SQLite с таймаутом и Row-friendly defaults."""
+    return sqlite3.connect(DB, timeout=10)
 
 def init_db():
     conn = sqlite3.connect(DB)
@@ -371,6 +388,11 @@ def init_db():
         milestone TEXT NOT NULL,
         shown_at TEXT NOT NULL,
         PRIMARY KEY (user_id, milestone)
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
     )""")
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA busy_timeout=5000")
@@ -982,6 +1004,39 @@ async def daily_loop():
 
 
 
+def set_app_setting(key, value):
+    with db_connect() as conn:
+        conn.execute(
+            "INSERT INTO app_settings(key,value,updated_at) VALUES (?,?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            (str(key), str(value), datetime.now(MOSCOW).isoformat()),
+        )
+
+def get_app_setting(key, default=""):
+    try:
+        with db_connect() as conn:
+            row = conn.execute("SELECT value FROM app_settings WHERE key=?", (str(key),)).fetchone()
+        return row[0] if row else default
+    except Exception:
+        return default
+
+def remember_owner_chat(user_id, chat_id):
+    if chat_id and is_owner(user_id):
+        try:
+            set_app_setting("max_owner_chat_id", int(chat_id))
+        except Exception:
+            logging.exception("Не удалось сохранить chat_id владельца")
+
+def get_owner_chat_id():
+    saved = get_app_setting("max_owner_chat_id", "")
+    try:
+        if saved:
+            return int(saved)
+    except (TypeError, ValueError):
+        pass
+    return int(MAX_OWNER_CHAT_ID or 0)
+
+
 def get_user_identity(user_id):
     try:
         with db_connect() as conn:
@@ -1005,10 +1060,11 @@ async def notify_owner(title, user_id=0, feature="", details=""):
                 f"Функция/шаг: {feature or step}\nВремя: {datetime.now().strftime('%d.%m.%Y %H:%M')}")
         if details:
             text += f"\n\nДетали:\n{details[:2500]}"
-        if MAX_OWNER_ID:
-            await send_message(MAX_OWNER_ID, text)
+        owner_chat_id = get_owner_chat_id()
+        if owner_chat_id:
+            await send_message(owner_chat_id, text)
         else:
-            logging.warning("MAX_OWNER_ID не задан — уведомление владельцу не отправлено: %s", text[:200])
+            logging.warning("MAX_OWNER_CHAT_ID не задан — уведомление владельцу не отправлено: %s", text[:200])
     except Exception as e:
         logging.error(f"Не удалось уведомить владельца: {e}")
 
@@ -1068,12 +1124,14 @@ async def handle_limit_msg(chat_id, access):
 
 async def process_command(chat_id, user_id, text, username="", first_name=""):
     get_user(user_id, username, first_name)
+    remember_owner_chat(user_id, chat_id)
     name = first_name or "друг"
 
     if text == "/myid":
         await send_message(
             chat_id,
-            f"Ваш MAX user_id: {user_id}\nUsername: @{username}" if username else f"Ваш MAX user_id: {user_id}",
+            (f"Ваш MAX user_id: {user_id}\nMAX chat_id: {chat_id}\nUsername: @{username}"
+             if username else f"Ваш MAX user_id: {user_id}\nMAX chat_id: {chat_id}"),
             main_menu_buttons()
         )
         return
@@ -1207,6 +1265,7 @@ async def process_command(chat_id, user_id, text, username="", first_name=""):
 
 async def process_callback(chat_id, user_id, payload, first_name=""):
     get_user(user_id, "", first_name)
+    remember_owner_chat(user_id, chat_id)
 
     if payload == "noop":
         return
@@ -1493,9 +1552,8 @@ async def startup():
         logging.error(f"Ошибка регистрации webhook: {e}")
     asyncio.create_task(check_payments_loop())
     asyncio.create_task(channel_posting_loop())
-    logging.info("Aura MAX Bot запущен!")
     asyncio.create_task(daily_loop())
-    logging.info("Aura MAX Bot запущен!")
+    logging.info("Aura MAX Bot v8 запущен")
 
 @app.post("/webhook")
 async def webhook(request: Request):
@@ -1509,7 +1567,7 @@ async def webhook(request: Request):
 
         if update_type == "bot_started":
             user = data.get("user", {})
-            chat_id = data.get("chat_id") or user.get("user_id")
+            chat_id = data.get("chat_id") or data.get("recipient", {}).get("chat_id") or user.get("user_id")
             user_id = user.get("user_id") or chat_id
             first_name = user.get("name", "друг")
             username = user.get("username", "")
@@ -1520,6 +1578,7 @@ async def webhook(request: Request):
                 or ""
             ).strip()
             get_user(user_id, username, first_name)
+            remember_owner_chat(user_id, chat_id)
             with sqlite3.connect(DB) as conn:
                 conn.execute("INSERT OR IGNORE INTO user_profiles (user_id) VALUES (?)", (user_id,))
                 if start_payload.startswith("ref_"):
