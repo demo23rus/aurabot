@@ -20,6 +20,10 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.storage.memory import MemoryStorage
 import anthropic
+from dotenv import load_dotenv
+import os
+load_dotenv("/root/.env_aura")
+
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -34,11 +38,11 @@ except Exception:  # optional premium calculations dependency
     TimezoneFinder = None
 
 # ========== КОНФИГ ==========
-BOT_TOKEN = "8887660316:AAHoVJ90RWIE6jz-pFbv8y3WVAI9WEsOXno"
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 BOT_USERNAME = "myaura_mystic_bot"
 CHANNEL_ID = "@aurabot_mystic"
-OPENAI_KEY = "sk-mfvVI3QN2uQvXPlhMkAeUUzmbjK5aQzj"
-CLAUDE_KEY = "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"
+OPENAI_KEY = os.getenv("OPENAI_KEY", "")
+CLAUDE_KEY = os.getenv("CLAUDE_KEY", "")
 OWNER_ID = 549639607
 SUPPORT_URL = "https://t.me/Boss023rus"
 
@@ -229,7 +233,7 @@ START_PHOTO = 5
 
 # ЮКасса
 YOOKASSA_SHOP_ID = "1363324"
-YOOKASSA_SECRET = "live_-RKE9nsi8wZiM-5f00z78E84OYSi3M0Dj9w_-pE0Mvw"
+YOOKASSA_SECRET = os.getenv("YOOKASSA_SECRET", "")
 
 # ========== GOOGLE SHEETS — КОМПАКТНАЯ КОММЕРЧЕСКАЯ АНАЛИТИКА ==========
 GOOGLE_CREDS_PATH = "/root/google_credentials.json"
