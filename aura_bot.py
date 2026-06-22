@@ -38,7 +38,7 @@ BOT_TOKEN = "8887660316:AAHoVJ90RWIE6jz-pFbv8y3WVAI9WEsOXno"
 BOT_USERNAME = "myaura_mystic_bot"
 CHANNEL_ID = "@aurabot_mystic"
 OPENAI_KEY = "sk-mfvVI3QN2uQvXPlhMkAeUUzmbjK5aQzj"
-CLAUDE_KEY = "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"
+CLAUDE_KEY = "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"
 OWNER_ID = 549639607
 SUPPORT_URL = "https://t.me/Boss023rus"
 
