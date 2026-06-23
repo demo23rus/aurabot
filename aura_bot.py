@@ -20,10 +20,6 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.storage.memory import MemoryStorage
 import anthropic
-from dotenv import load_dotenv
-import os
-load_dotenv("/root/.env_aura")
-
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -38,11 +34,14 @@ except Exception:  # optional premium calculations dependency
     TimezoneFinder = None
 
 # ========== КОНФИГ ==========
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+BOT_TOKEN = "8887660316:AAHoVJ90RWIE6jz-pFbv8y3WVAI9WEsOXno"
 BOT_USERNAME = "myaura_mystic_bot"
 CHANNEL_ID = "@aurabot_mystic"
-OPENAI_KEY = os.getenv("OPENAI_KEY", "")
-CLAUDE_KEY = os.getenv("CLAUDE_KEY", "")
+OPENAI_KEY = "sk-mfvVI3QN2uQvXPlhMkAeUUzmbjK5aQzj"
+CLAUDE_KEY = os.getenv("CLAUDE_KEY", "").strip()
+PHOTO_AI_PROVIDER = os.getenv("PHOTO_AI_PROVIDER", "openai").strip().lower()
+PHOTO_VISION_MODEL = os.getenv("PHOTO_VISION_MODEL", "gpt-4o-mini").strip()
+CLAUDE_PHOTO_MODEL = os.getenv("CLAUDE_PHOTO_MODEL", "claude-opus-4-6").strip()
 OWNER_ID = 549639607
 SUPPORT_URL = "https://t.me/Boss023rus"
 
@@ -233,7 +232,7 @@ START_PHOTO = 5
 
 # ЮКасса
 YOOKASSA_SHOP_ID = "1363324"
-YOOKASSA_SECRET = os.getenv("YOOKASSA_SECRET", "")
+YOOKASSA_SECRET = "live_-RKE9nsi8wZiM-5f00z78E84OYSi3M0Dj9w_-pE0Mvw"
 
 # ========== GOOGLE SHEETS — КОМПАКТНАЯ КОММЕРЧЕСКАЯ АНАЛИТИКА ==========
 GOOGLE_CREDS_PATH = "/root/google_credentials.json"
@@ -344,7 +343,7 @@ logging.basicConfig(level=logging.INFO)
 
 # ========== КЛИЕНТЫ AI ==========
 openai_client = AsyncOpenAI(api_key=OPENAI_KEY, base_url="https://api.proxyapi.ru/openai/v1")
-claude_client = anthropic.Anthropic(api_key=CLAUDE_KEY)
+claude_client = anthropic.Anthropic(api_key=CLAUDE_KEY) if CLAUDE_KEY else None
 
 # ========== TELEGRAM API ==========
 bot = Bot(token=BOT_TOKEN)
@@ -1112,28 +1111,120 @@ async def generate_with_history(system, history, new_message):
     )
     return clean_display_text(response.choices[0].message.content)
 
-async def generate_with_claude_photo(system_prompt, image_bytes):
+def _detect_image_media_type(image_bytes):
+    """Определить MIME-тип изображения по сигнатуре файла."""
+    if image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP":
+        return "image/webp"
+    if image_bytes[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if image_bytes[:3] == b"GIF":
+        return "image/gif"
+    return "image/jpeg"
+
+
+async def _openai_photo_analysis(system_prompt, image_bytes):
+    """Основной фото-анализ через уже работающий OpenAI-клиент."""
     import base64
-    image_base64 = base64.b64encode(image_bytes).decode('utf-8')
-    # Определяем формат по magic bytes
-    if image_bytes[:4] == b'RIFF' or image_bytes[8:12] == b'WEBP':
-        media_type = "image/webp"
-    elif image_bytes[:8] == b'\x89PNG\r\n\x1a\n':
-        media_type = "image/png"
-    elif image_bytes[:3] == b'GIF':
-        media_type = "image/gif"
-    else:
-        media_type = "image/jpeg"
-    response = await asyncio.to_thread(
-        claude_client.messages.create,
-        model="claude-opus-4-6",
-        max_tokens=1500,
-        messages=[{"role": "user", "content": [
-            {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": image_base64}},
-            {"type": "text", "text": system_prompt}
-        ]}]
+
+    image_base64 = base64.b64encode(image_bytes).decode("ascii")
+    media_type = _detect_image_media_type(image_bytes)
+    last_error = None
+
+    for attempt in range(2):
+        try:
+            response = await asyncio.wait_for(
+                openai_client.chat.completions.create(
+                    model=PHOTO_VISION_MODEL,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "Проанализируй прикреплённое изображение строго по системной инструкции. Ответь только на русском языке.",
+                                },
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:{media_type};base64,{image_base64}",
+                                        "detail": "high",
+                                    },
+                                },
+                            ],
+                        },
+                    ],
+                    max_tokens=1500,
+                ),
+                timeout=120,
+            )
+            content = response.choices[0].message.content
+            if not content:
+                raise RuntimeError("OpenAI вернул пустой результат фото-анализа")
+            return clean_display_text(content)
+        except Exception as exc:
+            last_error = exc
+            logging.warning("OpenAI photo attempt %s/2 failed: %s", attempt + 1, exc)
+            if attempt == 0:
+                await asyncio.sleep(2)
+
+    raise RuntimeError(f"OpenAI photo analysis failed: {last_error}")
+
+
+async def _claude_photo_analysis(system_prompt, image_bytes):
+    """Дополнительный провайдер; используется только при настроенном CLAUDE_KEY."""
+    import base64
+
+    if claude_client is None:
+        raise RuntimeError("Claude photo provider is not configured")
+
+    image_base64 = base64.b64encode(image_bytes).decode("ascii")
+    media_type = _detect_image_media_type(image_bytes)
+    response = await asyncio.wait_for(
+        asyncio.to_thread(
+            claude_client.messages.create,
+            model=CLAUDE_PHOTO_MODEL,
+            max_tokens=1500,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": image_base64,
+                            },
+                        },
+                        {"type": "text", "text": system_prompt},
+                    ],
+                }
+            ],
+        ),
+        timeout=120,
     )
     return clean_display_text(response.content[0].text)
+
+
+async def generate_photo_analysis(system_prompt, image_bytes):
+    """Фото-анализ с автоматическим резервным провайдером."""
+    preferred = PHOTO_AI_PROVIDER if PHOTO_AI_PROVIDER in {"openai", "claude"} else "openai"
+    providers = [preferred, "claude" if preferred == "openai" else "openai"]
+    errors = []
+
+    for provider in providers:
+        if provider == "claude" and claude_client is None:
+            continue
+        try:
+            if provider == "claude":
+                return await _claude_photo_analysis(system_prompt, image_bytes)
+            return await _openai_photo_analysis(system_prompt, image_bytes)
+        except Exception as exc:
+            errors.append(f"{provider}: {type(exc).__name__}: {exc}")
+            logging.warning("Фото-анализ через %s не выполнен: %s", provider, exc)
+
+    raise RuntimeError("; ".join(errors) or "Нет доступного провайдера фото-анализа")
 
 # ========== ОПЛАТА ==========
 async def create_payment(user_id, plan):
@@ -1459,6 +1550,7 @@ async def notify_owner(title, user_id=0, feature="", details=""):
         logging.error(f"Не удалось уведомить владельца: {e}")
 
 async def open_support(chat_id, user_id):
+    log_event(user_id, "support_opened")
     set_step(user_id, "support")
     await send_message(chat_id,
         "💬 Поддержка Aura\n\nОпиши, что произошло: какая функция не сработала, что ты нажимала и что увидела. "
@@ -1466,6 +1558,7 @@ async def open_support(chat_id, user_id):
         back_button())
 
 async def process_support_message(chat_id, user_id, text):
+    log_event(user_id, "support_sent")
     set_step(user_id, "idle")
     await notify_owner("🆘 Новое обращение в поддержку Aura", user_id, "support", text)
     await send_message(chat_id,
@@ -2010,7 +2103,7 @@ async def process_photo(chat_id, user_id, photo_url):
         if not image_bytes:
             await send_message(chat_id, "❌ Не удалось загрузить фото. Попробуй ещё раз.", back_button())
             return
-        result = await generate_with_claude_photo(system, image_bytes)
+        result = await generate_photo_analysis(system, image_bytes)
         set_step(user_id, "idle")
         if access == "ok":
             increment_limit(user_id, "requests" if limit_field == "requests" else limit_field)
@@ -2020,7 +2113,7 @@ async def process_photo(chat_id, user_id, photo_url):
     except Exception as e:
         logging.error(f"Ошибка фото-анализа: {e}")
         await notify_owner("⚠️ Ошибка фото-анализа", user_id, step, str(e))
-        await send_message(chat_id, "Ошибка анализа фото. Попробуй ещё раз.", back_button())
+        await send_message(chat_id, "⚠️ Фото сейчас не удалось обработать. Лимит не списан — отправь снимок ещё раз через минуту или напиши в поддержку.", back_button())
 
 # ========== TELEGRAM HANDLERS ==========
 async def process_start_payload(message: Message):
@@ -2102,6 +2195,82 @@ async def process_start_payload(message: Message):
         main_menu_buttons()
     )
 
+
+PLAN_PRICES = {
+    "aura_start": 190,
+    "aura_pro": 390,
+    "aura_pro_year": 2990,
+    "once_money_code": 199,
+    "once_matrix": 249,
+    "once_forecast": 299,
+    "once_natal": 349,
+}
+
+
+def _revenue_for_rows(rows):
+    return sum(PLAN_PRICES.get((row[0] or '').strip(), 0) for row in rows)
+
+
+def build_admin_stats_report():
+    now = datetime.now()
+    since7 = (now - timedelta(days=7)).isoformat()
+    with db_connect() as conn:
+        total_users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        active_start = conn.execute("SELECT COUNT(*) FROM subscriptions WHERE plan='aura_start' AND sub_end>?", (now.isoformat(),)).fetchone()[0]
+        active_pro = conn.execute("SELECT COUNT(*) FROM subscriptions WHERE plan='aura_pro' AND sub_end>?", (now.isoformat(),)).fetchone()[0]
+        total_reviews = conn.execute("SELECT COUNT(*) FROM reviews").fetchone()[0]
+        reviews_7d = conn.execute("SELECT COUNT(*) FROM reviews WHERE created_at>=?", (since7,)).fetchone()[0]
+        support_7d = conn.execute("SELECT COUNT(*) FROM analytics_events WHERE event='support_sent' AND created_at>=?", (since7,)).fetchone()[0]
+        sales_all = conn.execute("SELECT plan FROM payment_history WHERE status='succeeded'").fetchall()
+        sales_7d = conn.execute("SELECT plan FROM payment_history WHERE status='succeeded' AND processed_at>=?", (since7,)).fetchall()
+    total_sales = len(sales_all)
+    sales7 = len(sales_7d)
+    revenue_all = _revenue_for_rows(sales_all)
+    revenue_7d = _revenue_for_rows(sales_7d)
+    return (
+        "📊 Aura Telegram — сводка\\n\\n"
+        f"Пользователи: {total_users}\\n"
+        f"Активные подписки: {active_start + active_pro} (Старт {active_start} • Про {active_pro})\\n"
+        f"Продажи всего: {total_sales} • {revenue_all} ₽\\n"
+        f"Продажи за 7 дней: {sales7} • {revenue_7d} ₽\\n"
+        f"Отзывы: {total_reviews} (за 7 дней: {reviews_7d})\\n"
+        f"Обращения в поддержку за 7 дней: {support_7d}"
+    )
+
+
+def build_admin_funnel_report():
+    now = datetime.now()
+    since7 = (now - timedelta(days=7)).isoformat()
+    since30 = (now - timedelta(days=30)).isoformat()
+    with db_connect() as conn:
+        channel_entries_7d = conn.execute(
+            "SELECT COUNT(*) FROM analytics_events WHERE event='channel_entry' AND created_at>=?",
+            (since7,),
+        ).fetchone()[0]
+        top_sources = conn.execute(
+            "SELECT source, COUNT(*) FROM analytics_events WHERE event='channel_entry' AND created_at>=? GROUP BY source ORDER BY COUNT(*) DESC LIMIT 6",
+            (since7,),
+        ).fetchall()
+        channel_users_total = conn.execute(
+            "SELECT COUNT(*) FROM user_profiles WHERE source='channel_intro' OR source LIKE 'channel_%'",
+        ).fetchone()[0]
+        channel_sales_30d_rows = conn.execute(
+            "SELECT ph.plan FROM payment_history ph JOIN user_profiles up ON up.user_id=ph.user_id WHERE ph.status='succeeded' AND ph.processed_at>=? AND (up.source='channel_intro' OR up.source LIKE 'channel_%')",
+            (since30,),
+        ).fetchall()
+    top_lines = [f"• {src or 'unknown'} — {cnt}" for src, cnt in top_sources] or ["• пока нет переходов"]
+    channel_sales_30d = len(channel_sales_30d_rows)
+    channel_revenue_30d = _revenue_for_rows(channel_sales_30d_rows)
+    return (
+        "🚀 Aura Telegram — воронка\\n\\n"
+        f"Переходы из канала за 7 дней: {channel_entries_7d}\\n"
+        f"Пользователи, пришедшие из канала: {channel_users_total}\\n"
+        f"Продажи от канала за 30 дней: {channel_sales_30d} • {channel_revenue_30d} ₽\\n\\n"
+        "Топ входов за 7 дней:\\n" + "\\n".join(top_lines) +
+        "\\n\\nРеклама: веди в канал. В закрепе — intro-пост, в ленте — 1 CTA-пост в день и 2–3 визуальных поста в неделю."
+    )
+
+
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     await process_start_payload(message)
@@ -2162,6 +2331,20 @@ async def cmd_publish_channel_intro(message: Message):
         if ok else
         "❌ Не удалось опубликовать пост. Проверь журнал сервиса."
     )
+
+
+@dp.message(Command("stats"))
+async def cmd_stats(message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+    await message.answer(build_admin_stats_report())
+
+
+@dp.message(Command("funnel"))
+async def cmd_funnel(message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+    await message.answer(build_admin_funnel_report())
 
 @dp.message(Command("reviews"))
 async def cmd_reviews(message: Message):
