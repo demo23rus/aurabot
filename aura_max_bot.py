@@ -29,9 +29,9 @@ except Exception:  # optional premium calculations dependency
     TimezoneFinder = None
 
 # ========== КОНФИГ ==========
-MAX_TOKEN = "f9LHodD0cOKQMa6aUXu2uNfUQu8nnfZcgZ7c0X8aUUwrz1XCbBY18pNaP0FDdHV7s89tHIIpuN78bVpdyzjQ"
+MAX_TOKEN = os.getenv("MAX_TOKEN", "").strip()
 MAX_API = "https://platform-api.max.ru"
-OPENAI_KEY = "sk-mfvVI3QN2uQvXPlhMkAeUUzmbjK5aQzj"
+OPENAI_KEY = os.getenv("OPENAI_KEY", "").strip()
 CLAUDE_KEY = os.getenv("CLAUDE_KEY", "").strip()
 PHOTO_AI_PROVIDER = os.getenv("PHOTO_AI_PROVIDER", "openai").strip().lower()
 PHOTO_VISION_MODEL = os.getenv("PHOTO_VISION_MODEL", "gpt-4o-mini").strip()
@@ -237,7 +237,7 @@ START_PHOTO = 5
 
 # ЮКасса
 YOOKASSA_SHOP_ID = "1363324"
-YOOKASSA_SECRET = "live_-RKE9nsi8wZiM-5f00z78E84OYSi3M0Dj9w_-pE0Mvw"
+YOOKASSA_SECRET = os.getenv("YOOKASSA_SECRET", "").strip()
 
 # ========== GOOGLE SHEETS — КОМПАКТНАЯ КОММЕРЧЕСКАЯ АНАЛИТИКА ==========
 GOOGLE_CREDS_PATH = "/root/google_credentials.json"
@@ -461,13 +461,13 @@ def back_button():
 def upgrade_buttons(plan="any"):
     if plan == "start":
         return [
-            [{"type": "callback", "text": "🔥 Купить Про — 390 руб", "payload": "pay_pro"}],
+            [{"type": "callback", "text": "🔥 Открыть Про · 390 ₽", "payload": "pay_pro"}],
             [{"type": "callback", "text": "🔙 В меню", "payload": "back_menu"}]
         ]
     return [
-        [{"type": "callback", "text": "✅ Старт — 190 руб", "payload": "pay_start"}],
-        [{"type": "callback", "text": "🔥 Про — 390 руб", "payload": "pay_pro"}],
-        [{"type": "callback", "text": "💜 Про на год — 2 990 руб", "payload": "pay_year"}],
+        [{"type": "callback", "text": "🟢 Старт · 190 ₽", "payload": "pay_start"}],
+        [{"type": "callback", "text": "🔥 Про · 390 ₽", "payload": "pay_pro"}],
+        [{"type": "callback", "text": "💜 Про на год · 2 990 ₽", "payload": "pay_year"}],
         [{"type": "callback", "text": "🔙 В меню", "payload": "back_menu"}]
     ]
 
@@ -1757,11 +1757,21 @@ async def build_feature_prompt(step, text):
 
 
 # ========== ОБРАБОТКА СООБЩЕНИЙ ==========
-WELCOME_TEXT = """🔮 {name}, добро пожаловать в AuraMAX.
+WELCOME_TEXT = """✨ {name}, добро пожаловать в Aura.
 
-Я помогу получить не общий текст, а личную подсказку под твою ситуацию: отношения, деньги, предназначение или внутреннее состояние.
+Здесь можно спокойно разобраться в том, что сейчас действительно важно: отношениях, деньгах, внутреннем состоянии или направлении жизни.
 
-🎁 Начни с бесплатного разбора — выбери, что волнует тебя сейчас."""
+Что доступно:
+• личные разборы под твою ситуацию
+• Таро, нумерология, сны и совместимость
+• AI-психолог с памятью диалога
+• дневник и вечерняя рефлексия
+• фото-разборы и глубокие персональные продукты
+
+🎁 Бесплатно: 5 личных разборов и 15 сообщений психологу
+🌙 Каждый день — мягкие персональные подсказки
+
+Выбери раздел ниже. Я проведу тебя дальше шаг за шагом."""
 
 async def handle_limit_msg(chat_id, access):
     if access == "limit_free":
@@ -1775,8 +1785,8 @@ async def handle_limit_msg(chat_id, access):
     elif access == "diary_blocked":
         await send_message(chat_id, "📔 Постоянный личный дневник доступен с тарифа Старт.\n\nМожно сначала бесплатно пройти короткую вечернюю рефлексию.", [
             [{"type":"callback","text":"📝 Бесплатная рефлексия","payload":"evening_reflection"}],
-            [{"type":"callback","text":"✅ Старт — 190 руб","payload":"pay_start"}],
-            [{"type":"callback","text":"🔥 Про — 390 руб","payload":"pay_pro"}],
+            [{"type":"callback","text":"🟢 Старт · 190 ₽","payload":"pay_start"}],
+            [{"type":"callback","text":"🔥 Про · 390 ₽","payload":"pay_pro"}],
             [{"type":"callback","text":"🔙 В меню","payload":"back_menu"}],
         ])
     elif access == "start_block":
@@ -1821,12 +1831,12 @@ def build_admin_stats_report():
     revenue_all = _revenue_for_rows(sales_all)
     revenue_7d = _revenue_for_rows(sales_7d)
     return (
-        "📊 Aura MAX — сводка\\n\\n"
-        f"Пользователи: {total_users}\\n"
-        f"Активные подписки: {active_start + active_pro} (Старт {active_start} • Про {active_pro})\\n"
-        f"Продажи всего: {total_sales} • {revenue_all} ₽\\n"
-        f"Продажи за 7 дней: {sales7} • {revenue_7d} ₽\\n"
-        f"Отзывы: {total_reviews} (за 7 дней: {reviews_7d})\\n"
+        "📊 Aura MAX — сводка\n\n"
+        f"Пользователи: {total_users}\n"
+        f"Активные подписки: {active_start + active_pro} (Старт {active_start} • Про {active_pro})\n"
+        f"Продажи всего: {total_sales} • {revenue_all} ₽\n"
+        f"Продажи за 7 дней: {sales7} • {revenue_7d} ₽\n"
+        f"Отзывы: {total_reviews} (за 7 дней: {reviews_7d})\n"
         f"Обращения в поддержку за 7 дней: {support_7d}"
     )
 
@@ -1855,12 +1865,12 @@ def build_admin_funnel_report():
     channel_sales_30d = len(channel_sales_30d_rows)
     channel_revenue_30d = _revenue_for_rows(channel_sales_30d_rows)
     return (
-        "🚀 Aura MAX — воронка\\n\\n"
-        f"Переходы из канала за 7 дней: {channel_entries_7d}\\n"
-        f"Пользователи, пришедшие из канала: {channel_users_total}\\n"
-        f"Продажи от канала за 30 дней: {channel_sales_30d} • {channel_revenue_30d} ₽\\n\\n"
-        "Топ сценариев входа за 7 дней:\\n" + "\\n".join(top_lines) +
-        "\\n\\nРеклама: веди в канал. В закрепе — intro-пост, в ленте — 1 CTA-пост в день и 2–3 визуальных поста в неделю."
+        "🚀 Aura MAX — воронка\n\n"
+        f"Переходы из канала за 7 дней: {channel_entries_7d}\n"
+        f"Пользователи, пришедшие из канала: {channel_users_total}\n"
+        f"Продажи от канала за 30 дней: {channel_sales_30d} • {channel_revenue_30d} ₽\n\n"
+        "Топ сценариев входа за 7 дней:\n" + "\n".join(top_lines) +
+        "\n\nРеклама: веди в канал. В закрепе — intro-пост, в ленте — 1 CTA-пост в день и 2–3 визуальных поста в неделю."
     )
 
 
@@ -1952,6 +1962,14 @@ async def process_command(chat_id, user_id, text, username="", first_name=""):
                 main_menu_buttons()
             )
             return
+        ok = await publish_channel_intro()
+        await send_message(
+            chat_id,
+            "✅ Продающий пост опубликован. Теперь его можно закрепить в канале."
+            if ok else "❌ Не удалось опубликовать пост. Проверь журнал сервиса.",
+            main_menu_buttons(),
+        )
+        return
 
     if text == "/stats":
         if not is_owner(user_id, username):
@@ -1965,9 +1983,6 @@ async def process_command(chat_id, user_id, text, username="", first_name=""):
             await send_message(chat_id, "⛔ Команда доступна владельцу.")
             return
         await send_message(chat_id, build_admin_funnel_report(), main_menu_buttons())
-        return
-        ok = await publish_channel_intro()
-        await send_message(chat_id, "✅ Продающий пост опубликован. Теперь его можно закрепить в канале." if ok else "❌ Не удалось опубликовать пост. Проверь журнал сервиса.", main_menu_buttons())
         return
 
     if text in ("/start", "start"):
@@ -2024,7 +2039,7 @@ async def process_command(chat_id, user_id, text, username="", first_name=""):
         set_step(user_id, "idle")
         save_review(user_id, username, first_name, text)
         asyncio.create_task(asyncio.to_thread(sheets_log_review, user_id, first_name, username, text))
-        await send_message(chat_id, "⭐️ Спасибо за отзыв! Обязательно учтём.", main_menu_buttons())
+        await send_message(chat_id, "⭐️ Спасибо за отзыв. Это помогает нам делать Aura ещё лучше. 💜", main_menu_buttons())
         return
 
     if step == "diary":
@@ -2073,7 +2088,7 @@ async def process_command(chat_id, user_id, text, username="", first_name=""):
                 return
             await handle_limit_msg(chat_id, access)
             return
-        await send_message(chat_id, "⏳ Анализирую...")
+        await send_message(chat_id, "⏳ Собираю твой личный разбор...")
         try:
             system, prompt, birth_dt = await build_feature_prompt(step, text)
             result = await generate_text(system, prompt)
@@ -2113,7 +2128,7 @@ async def process_command(chat_id, user_id, text, username="", first_name=""):
         await send_message(chat_id, result + offer_note, offer_buttons)
         return
 
-    await send_message(chat_id, "Выбери действие из меню 👇", main_menu_buttons())
+    await send_message(chat_id, "Выбери раздел ниже — я проведу тебя дальше ✨", main_menu_buttons())
 
 async def process_callback(chat_id, user_id, payload, first_name=""):
     get_user(user_id, "", first_name)
@@ -2181,7 +2196,7 @@ async def process_callback(chat_id, user_id, payload, first_name=""):
     if payload == "psycho_new":
         clear_psycho_history(user_id)
         set_step(user_id, "psycho")
-        await send_message(chat_id, "🧠 Новый разговор.\n\nРасскажи что тебя беспокоит.", psycho_buttons())
+        await send_message(chat_id, "🧠 Новый разговор\n\nНачинаем заново. Напиши, с чем хочешь разобраться сейчас.", psycho_buttons())
         return
 
     if payload == "tariffs":
@@ -2192,28 +2207,29 @@ async def process_callback(chat_id, user_id, payload, first_name=""):
         elif plan == "aura_pro":
             current = f"\n\n✅ Твой тариф: 🔥 Про (до {sub_end.strftime('%d.%m.%Y')})"
         await send_message(chat_id,
-            f"💎 Тарифы AuraBot\n\n"
-            f"✅ Старт — 190 руб / 1 месяц\n"
-            f"Все базовые функции безлимит\n"
-            f"Хиромантия, Физиогномика, Графология — по 5 раз\n"
-            f"Психолог — 100 сообщений\n"
-            f"Личный дневник\n\n"
-            f"🔥 Про — 390 руб / 1 месяц\n"
-            f"Всё без ограничений\n"
-            f"Матрица, Прогноз, Натальная карта\n"
-            f"Денежный код, все фото-анализы\n"
-            f"Персональный гороскоп каждое утро\n\n"
+            f"💎 Тарифы Aura\n\n"
+            f"🟢 Старт — 190 ₽ / 30 дней\n"
+            f"• базовые разборы без ограничений\n"
+            f"• дневник\n"
+            f"• хиромантия, графология и фото-разборы — по условиям тарифа\n"
+            f"• психолог — до 100 сообщений\n\n"
+            f"🔥 Про — 390 ₽ / 30 дней\n"
+            f"• полный доступ ко всем функциям\n"
+            f"• Матрица судьбы, Прогноз и Натальная карта\n"
+            f"• Денежный код и глубокие фото-разборы\n"
+            f"• персональная ежедневная подсказка\n"
+            f"• психолог без ограничений\n\n"
+            f"💜 Про на год — 2 990 ₽ / 365 дней\n\n"
             f"✨ Разовые разборы без подписки\n"
             f"Денежный код — 199 ₽\n"
             f"Матрица судьбы — 249 ₽\n"
             f"Прогноз на год — 299 ₽\n"
             f"Натальная карта — 349 ₽\n\n"
-            f"🌙 Всем бесплатно: лунный календарь каждое утро\n\n"
-            f"🎁 Бесплатно: 5 разборов + 15 сообщений психологу{current}",
+            f"🎁 Бесплатно: 5 разборов и 15 сообщений психологу{current}",
             [
-                [{"type": "callback", "text": "✅ Старт — 190 руб", "payload": "pay_start"}],
-                [{"type": "callback", "text": "🔥 Про — 390 руб", "payload": "pay_pro"}],
-                [{"type": "callback", "text": "💜 Про на год — 2 990 руб", "payload": "pay_year"}],
+                [{"type": "callback", "text": "🟢 Старт · 190 ₽", "payload": "pay_start"}],
+                [{"type": "callback", "text": "🔥 Про · 390 ₽", "payload": "pay_pro"}],
+                [{"type": "callback", "text": "💜 Про на год · 2 990 ₽", "payload": "pay_year"}],
                 [{"type": "callback", "text": "🔙 В меню", "payload": "back_menu"}]
             ]
         )
@@ -2289,9 +2305,9 @@ async def process_callback(chat_id, user_id, payload, first_name=""):
         set_step(user_id, "psycho")
         history = get_psycho_history(user_id)
         if history:
-            await send_message(chat_id, "🧠 AI-Психолог\n\nПродолжаем разговор. Что тебя беспокоит?", psycho_buttons())
+            await send_message(chat_id, "🧠 AI-Психолог\n\nПродолжим с того места, где остановились. Напиши всё как есть — я помогу разложить ситуацию по шагам.", psycho_buttons())
         else:
-            await send_message(chat_id, "🧠 AI-Психолог\n\nРасскажи что тебя беспокоит прямо сейчас.", psycho_buttons())
+            await send_message(chat_id, "🧠 AI-Психолог\n\nНапиши, что сейчас больше всего тревожит, ранит или не даёт покоя. Начнём с этого.", psycho_buttons())
         return
 
     if payload == "diary":
@@ -2302,11 +2318,11 @@ async def process_callback(chat_id, user_id, payload, first_name=""):
         set_step(user_id, "diary")
         await send_message(chat_id,
             "📔 Личный дневник\n\n"
-            "Это твоё личное пространство — только ты и твои мысли.\n\n"
-            "Запиши как прошёл день, что на душе.\n"
-            "Я тихо выслушаю и задам один вопрос.\n\n"
-            "Для советов — используй 🧠 AI-Психолог\n\n"
-            "📔 Доступен на тарифе Старт и Про",
+            "Тихое личное пространство для мыслей, переживаний и наблюдений.\n\n"
+            "Напиши, как прошёл день, что осталось в голове или на сердце.\n"
+            "Я бережно откликнусь и задам один мягкий вопрос.\n\n"
+            "Если нужен совет и диалог — открой 🧠 Психолог.\n\n"
+            "📔 Доступно на тарифах Старт и Про.",
             back_button()
         )
         return
@@ -2318,9 +2334,9 @@ async def process_callback(chat_id, user_id, payload, first_name=""):
             return
         set_step(user_id, payload)
         photo_msgs = {
-            "chiromancy": "🖐 Хиромантия\n\nПришли фото ладони:\n— Хорошее освещение\n— Ладонь вверх, пальцы расслаблены\n— Лучше правая рука",
-            "physio": "😊 Физиогномика\n\nПришли фото лица:\n— Анфас, прямо в камеру\n— Хорошее освещение\n— Без фильтров",
-            "grapho": "✍️ Графология\n\nНапиши от руки 5-7 предложений и пришли фото:\n— Пиши как обычно\n— Хорошее освещение",
+            "chiromancy": "🖐 Хиромантия\n\nПришли чёткое фото ладони:\n• хороший свет\n• ладонь раскрыта вверх\n• пальцы расслаблены\n• лучше правая рука\n\nПосле этого я подготовлю личный символический разбор линий и формы руки.",
+            "physio": "😊 Впечатление по фото\n\nПришли фото лица:\n• анфас, взгляд прямо в камеру\n• хороший свет\n• без фильтров\n\nЯ подготовлю аккуратную рефлексию о визуальном впечатлении.",
+            "grapho": "✍️ Графология\n\nНапиши от руки 5–7 предложений и пришли фото листа:\n• пиши как обычно\n• хороший свет\n• текст должен быть читаемым\n\nПосле этого я разберу особенности почерка.",
         }
         await send_message(chat_id, photo_msgs[payload], back_button())
         return
@@ -2331,7 +2347,7 @@ async def process_callback(chat_id, user_id, payload, first_name=""):
             await send_message(chat_id, "🔒 Таро по фото доступно только на тарифе Про.\n\n390 руб/мес:", upgrade_buttons("start"))
             return
         set_step(user_id, "taro_photo")
-        await send_message(chat_id, "🃏 Таро по фото карт\n\nВытащи карты и сфотографируй их.\nЯ прочитаю расклад!", back_button())
+        await send_message(chat_id, "🃏 Таро по фото карт\n\nРазложи карты так, чтобы каждая была хорошо видна, и отправь фото.\n\nЯ определю карты и соберу связный разбор расклада.", back_button())
         return
 
     if payload == "compat_photo":
@@ -2340,7 +2356,7 @@ async def process_callback(chat_id, user_id, payload, first_name=""):
             await send_message(chat_id, "🔒 Совместимость по фото только на тарифе Про.\n\n390 руб/мес:", upgrade_buttons("start"))
             return
         set_step(user_id, "compat_photo")
-        await send_message(chat_id, "👫 Совместимость по фото\n\nПришли фото где видны оба человека.", back_button())
+        await send_message(chat_id, "👫 Совместимость по фото\n\nПришли фото, на котором хорошо видны оба человека.\n\nЯ подготовлю мягкую рефлексию о динамике и сильных сторонах пары.", back_button())
         return
 
     if payload in pro_features and payload not in ("taro_photo", "compat_photo"):
@@ -2370,7 +2386,7 @@ async def process_callback(chat_id, user_id, payload, first_name=""):
         await send_message(chat_id, f"{name}\n\n{step_buttons[payload]}", back_button())
         return
 
-    await send_message(chat_id, "Выбери действие из меню 👇", main_menu_buttons())
+    await send_message(chat_id, "Выбери раздел ниже — я проведу тебя дальше ✨", main_menu_buttons())
 
 async def process_photo(chat_id, user_id, photo_url):
     user = get_user(user_id)
@@ -2385,7 +2401,7 @@ async def process_photo(chat_id, user_id, photo_url):
     }
 
     if step not in photo_steps:
-        await send_message(chat_id, "Выбери функцию из меню чтобы отправить фото 👇", main_menu_buttons())
+        await send_message(chat_id, "Сначала выбери нужный фото-разбор, затем отправь фото ✨", main_menu_buttons())
         return
 
     system, feature, limit_field = photo_steps[step]
@@ -2394,11 +2410,11 @@ async def process_photo(chat_id, user_id, photo_url):
         await handle_limit_msg(chat_id, access)
         return
 
-    await send_message(chat_id, "⏳ Анализирую фото...")
+    await send_message(chat_id, "⏳ Внимательно изучаю фото и собираю разбор...")
     try:
         image_bytes = await get_photo(photo_url)
         if not image_bytes:
-            await send_message(chat_id, "❌ Не удалось загрузить фото. Попробуй ещё раз.", back_button())
+            await send_message(chat_id, "❌ Не получилось загрузить фото. Попробуй ещё раз — я проверю заново.", back_button())
             return
         result = await generate_photo_analysis(system, image_bytes)
         set_step(user_id, "idle")
