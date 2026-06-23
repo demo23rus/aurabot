@@ -1,3 +1,5 @@
+from dotenv import load_dotenv
+load_dotenv("/root/.env_aura")
 import asyncio
 import sqlite3
 import logging
