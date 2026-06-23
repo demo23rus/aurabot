@@ -2698,7 +2698,23 @@ async def health():
 
 # ========== ФИРМЕННЫЕ ВИЗУАЛЫ КАНАЛА ==========
 VISUAL_DIR = "/tmp/aura_channel_visuals"
-VISUAL_DAYS = {0: "Планы недели", 2: "Отношения", 4: "Выбор и Таро", 6: "Итоги недели"}
+VISUAL_DAY_LABELS = {
+    0: "Планы недели",
+    1: "Деньги и реализация",
+    2: "Отношения",
+    3: "Опора и состояние",
+    4: "Выбор и Таро",
+    5: "Самопознание",
+    6: "Итоги недели",
+}
+
+RUBRIC_VISUAL_META = {
+    "morning": {"label": "Утренний настрой", "icon": "✦", "accent": "dawn"},
+    "value": {"label": "Главный пост дня", "icon": "◐", "accent": "editorial"},
+    "evening": {"label": "Вечерняя рефлексия", "icon": "☾", "accent": "moon"},
+    "review": {"label": "Отзыв", "icon": "★", "accent": "review"},
+    "intro": {"label": "Добро пожаловать", "icon": "✦", "accent": "intro"},
+}
 
 
 def _load_visual_font(size, bold=False, serif=False):
@@ -2743,15 +2759,47 @@ def _wrap_visual_text(draw, text, font, max_width, max_lines=4):
     return lines
 
 
+def _visual_title_for_slot(dt, rubric, title):
+    base = clean_display_text(title or "").strip()
+    if rubric == "morning":
+        return f"{VISUAL_DAY_LABELS.get(dt.weekday(), 'День')} • настрой на день"
+    if rubric == "evening":
+        return f"{VISUAL_DAY_LABELS.get(dt.weekday(), 'День')} • мягкое завершение"
+    return base or VISUAL_DAY_LABELS.get(dt.weekday(), "Аура")
+
+
+def _draw_visual_accent(draw, accent, gold, violet):
+    if accent == "dawn":
+        for radius in (130, 185, 240):
+            draw.arc((860 - radius, 130 - radius, 860 + radius, 130 + radius), 8, 172, fill=gold, width=3)
+        draw.line((720, 130, 1000, 130), fill=(243, 224, 168, 170), width=2)
+    elif accent == "moon":
+        draw.ellipse((820, 70, 1085, 335), fill=(237, 227, 255, 22), outline=violet, width=3)
+        draw.ellipse((885, 70, 1150, 335), fill=(15, 6, 32, 0), outline=gold, width=3)
+    elif accent == "review":
+        points = [(790, 132), (850, 290), (1018, 290), (882, 388), (935, 548), (790, 455), (645, 548), (698, 388), (562, 290), (730, 290)]
+        for i in range(len(points)):
+            first = points[i]
+            second = points[(i + 1) % len(points)]
+            draw.line((*first, *second), fill=gold, width=3)
+    elif accent == "intro":
+        draw.rounded_rectangle((850, 95, 1090, 390), radius=28, outline=gold, width=4, fill=(24, 10, 48, 118))
+        draw.ellipse((920, 150, 1020, 250), outline=gold, width=3)
+        draw.line((970, 128, 970, 330), fill=gold, width=2)
+        draw.line((915, 200, 1025, 200), fill=gold, width=2)
+    else:
+        draw.ellipse((785, 120, 1045, 380), outline=violet, width=4)
+        draw.ellipse((895, 120, 1155, 380), outline=gold, width=4)
+
+
 def create_channel_visual(dt, rubric, title):
-    """Create four distinct premium editorial cards per week without external APIs."""
-    if rubric != "value" or dt.weekday() not in VISUAL_DAYS:
-        return None
+    """Create premium editorial visuals locally for every channel post without external APIs."""
     try:
         from PIL import Image, ImageDraw, ImageFilter
         import random
         os.makedirs(VISUAL_DIR, exist_ok=True)
-        path = os.path.join(VISUAL_DIR, f"{dt.strftime('%Y%m%d')}_{rubric}_premium.png")
+        safe_rubric = (rubric or "value").replace("/", "_")
+        path = os.path.join(VISUAL_DIR, f"{dt.strftime('%Y%m%d')}_{safe_rubric}_premium.png")
         if os.path.exists(path):
             return path
         size = 1200
@@ -2759,67 +2807,53 @@ def create_channel_visual(dt, rubric, title):
         pixels = img.load()
         for y in range(size):
             for x in range(size):
-                dx, dy = x - 720, y - 500
-                radial = max(0.0, 1.0 - ((dx * dx + dy * dy) ** 0.5) / 900)
+                dx, dy = x - 730, y - 480
+                radial = max(0.0, 1.0 - ((dx * dx + dy * dy) ** 0.5) / 920)
                 vertical = y / size
                 pixels[x, y] = (
-                    int(15 + 35 * radial + 10 * vertical),
-                    int(6 + 12 * radial),
-                    int(32 + 62 * radial + 18 * vertical),
+                    int(16 + 34 * radial + 10 * vertical),
+                    int(7 + 12 * radial),
+                    int(34 + 60 * radial + 20 * vertical),
                 )
         glow = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         glow_draw = ImageDraw.Draw(glow)
-        glow_draw.ellipse((610, 150, 1180, 720), fill=(156, 88, 255, 70))
-        glow_draw.ellipse((-240, 700, 400, 1340), fill=(87, 39, 160, 55))
-        glow = glow.filter(ImageFilter.GaussianBlur(85))
+        glow_draw.ellipse((590, 120, 1170, 720), fill=(156, 88, 255, 72))
+        glow_draw.ellipse((-220, 760, 420, 1380), fill=(87, 39, 160, 58))
+        glow = glow.filter(ImageFilter.GaussianBlur(88))
         img = Image.alpha_composite(img.convert("RGBA"), glow)
         draw = ImageDraw.Draw(img, "RGBA")
-        rnd = random.Random(int(dt.strftime("%Y%m%d")) + dt.weekday() * 91)
-        for _ in range(105):
+        rnd = random.Random(int(dt.strftime("%Y%m%d")) + sum(ord(ch) for ch in safe_rubric) * 13)
+        for _ in range(110):
             x, y = rnd.randint(30, 1170), rnd.randint(30, 1170)
             radius = rnd.choice((1, 1, 1, 2, 2, 3))
-            alpha = rnd.randint(65, 180)
+            alpha = rnd.randint(60, 180)
             draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=(239, 220, 255, alpha))
-        day = dt.weekday()
-        gold = (222, 187, 116, 205)
+        gold = (222, 187, 116, 208)
         violet = (199, 161, 255, 180)
-        if day == 0:
-            for radius in (150, 205, 260):
-                draw.arc((850 - radius, 125 - radius, 850 + radius, 125 + radius), 5, 175, fill=gold, width=3)
-        elif day == 2:
-            draw.ellipse((790, 115, 1050, 375), outline=violet, width=4)
-            draw.ellipse((900, 115, 1160, 375), outline=gold, width=4)
-        elif day == 4:
-            draw.rounded_rectangle((860, 95, 1080, 410), radius=24, outline=gold, width=4, fill=(23, 10, 47, 125))
-            draw.ellipse((925, 160, 1015, 250), outline=gold, width=3)
-            draw.line((970, 135, 970, 330), fill=gold, width=2)
-        else:
-            points = [(780, 150), (920, 90), (1085, 205), (1015, 350), (850, 320)]
-            for first, second in zip(points, points[1:]):
-                draw.line((*first, *second), fill=gold, width=3)
-            for x, y in points:
-                draw.ellipse((x - 7, y - 7, x + 7, y + 7), fill=(255, 237, 189, 230))
+        meta = RUBRIC_VISUAL_META.get(rubric, RUBRIC_VISUAL_META["value"])
+        _draw_visual_accent(draw, meta["accent"], gold, violet)
         brand = _load_visual_font(31, bold=True)
-        title_font = _load_visual_font(70, bold=True)
+        title_font = _load_visual_font(64, bold=True)
         serif = _load_visual_font(31, serif=True)
         small = _load_visual_font(27)
+        micro = _load_visual_font(25)
         draw.text((78, 72), "АУРА — ПСИХОЛОГИЯ", font=brand, fill=(232, 211, 255, 240))
         draw.line((78, 125, 510, 125), fill=(221, 187, 116, 185), width=2)
-        panel = (65, 360, 1135, 1010)
-        draw.rounded_rectangle(panel, radius=42, fill=(18, 8, 39, 174), outline=(218, 187, 244, 90), width=2)
-        draw.text((105, 410), VISUAL_DAYS[day].upper(), font=small, fill=(222, 187, 116, 235))
-        y_pos = 500
-        for line in _wrap_visual_text(draw, title, title_font, 910, 4):
+        panel = (65, 350, 1135, 1018)
+        draw.rounded_rectangle(panel, radius=42, fill=(18, 8, 39, 176), outline=(218, 187, 244, 90), width=2)
+        draw.text((105, 402), f"{meta['icon']} {meta['label'].upper()}", font=small, fill=(222, 187, 116, 235))
+        title_text = _visual_title_for_slot(dt, rubric, title)
+        y_pos = 492
+        for line in _wrap_visual_text(draw, title_text, title_font, 910, 4):
             draw.text((105, y_pos), line, font=title_font, fill=(255, 255, 255, 245))
-            y_pos += 92
-        draw.text((105, 930), "Пойми себя • найди опору • сделай следующий шаг", font=serif, fill=(222, 208, 236, 235))
-        draw.text((78, 1100), "Практика • психология • самопознание", font=small, fill=(203, 178, 224, 220))
+            y_pos += 86
+        draw.text((105, 918), "Пойми себя • найди опору • сделай следующий шаг", font=serif, fill=(222, 208, 236, 235))
+        draw.text((78, 1098), VISUAL_DAY_LABELS.get(dt.weekday(), "Аура") + " • практика • психология • самопознание", font=micro, fill=(203, 178, 224, 220))
         img.convert("RGB").save(path, quality=95)
         return path
     except Exception as exc:
         logging.exception("Визуал канала: %s", exc)
         return None
-
 
 def get_recent_reviews(limit=10):
     try:
@@ -2987,13 +3021,13 @@ def build_channel_prompt(dt, rubric):
             "bot_demo": "Покажи ИЛЛЮСТРАТИВНЫЙ пример структуры персонального ответа бота. Не выдавай его за отзыв или реальную историю. Объясни отличие личного разбора от общего поста.",
             "weekly_digest": "Сохраняемый итог недели: три вопроса, одна практика и намерение на следующую неделю.",
         }
-        limit = "до 850 знаков" if dt.weekday() in VISUAL_DAYS else "до 1200 знаков"
+        limit = "до 850 знаков" if rubric == "value" else "до 1200 знаков"
         task = f"Тема: {theme}. Главный пост {limit}. {formats[mode]} Короткие абзацы и конкретика."
     return task + avoid
 
 
 async def generate_channel_post(dt, rubric):
-    limit = 580 if rubric in ("morning", "evening") else (880 if dt.weekday() in VISUAL_DAYS else 1250)
+    limit = 580 if rubric in ("morning", "evening") else (880 if rubric == "value" else 1250)
     try:
         text = clean_display_text(await generate_text(CHANNEL_EDITOR_SYSTEM, build_channel_prompt(dt, rubric)))
         if len(text) < 100:
@@ -3035,7 +3069,9 @@ async def publish_saved_review(review_id):
             f"«{truncate_at_sentence(row[1], 900)}»\n\n"
             f"— {first_name}, имя опубликовано с разрешения автора."
         )
-        await send_to_channel(text, "🎁 Попробовать Ауру бесплатно", "channel_intro")
+        visual_dt = datetime.now(MOSCOW)
+        visual = create_channel_visual(visual_dt, "review", "Реальный отзыв об Ауре")
+        await send_to_channel(text, "🎁 Попробовать Ауру бесплатно", "channel_intro", visual)
         return True
     except Exception as exc:
         logging.exception("Публикация отзыва: %s", exc)
@@ -3061,6 +3097,8 @@ async def publish_channel_intro():
 Нажми кнопку и выбери то, что волнует тебя сейчас."""
     try:
         image_path = str(INTRO_IMAGE_PATH) if INTRO_IMAGE_PATH.exists() else None
+        if not image_path:
+            image_path = create_channel_visual(datetime.now(MOSCOW), "intro", "Aura — психология и личные разборы")
         await send_to_channel(text, "🎁 Начать бесплатный личный разбор", "channel_intro", image_path)
         return True
     except Exception as exc:
