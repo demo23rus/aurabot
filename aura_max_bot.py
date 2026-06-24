@@ -38,6 +38,9 @@ CLAUDE_KEY = os.getenv("CLAUDE_KEY", "").strip()
 PHOTO_AI_PROVIDER = os.getenv("PHOTO_AI_PROVIDER", "openai").strip().lower()
 PHOTO_VISION_MODEL = os.getenv("PHOTO_VISION_MODEL", "gpt-4o-mini").strip()
 CLAUDE_PHOTO_MODEL = os.getenv("CLAUDE_PHOTO_MODEL", "claude-opus-4-6").strip()
+CHANNEL_IMAGE_MODEL = os.getenv("CHANNEL_IMAGE_MODEL", "gpt-image-1").strip()
+CHANNEL_IMAGE_SIZE = os.getenv("CHANNEL_IMAGE_SIZE", "1024x1024").strip()
+CHANNEL_IMAGE_RUBRICS = os.getenv("CHANNEL_IMAGE_RUBRICS", "morning,value").strip()
 TELEGRAM_OWNER_ID = 549639607  # Не используется для авторизации в MAX
 MAX_OWNER_ID = int(os.getenv("MAX_OWNER_ID", "214128371") or 214128371)
 MAX_OWNER_CHAT_ID = int(os.getenv("MAX_OWNER_CHAT_ID", "506244977") or 506244977)
@@ -2696,164 +2699,95 @@ async def health():
     return {"status": "ok", "product": "Aura MAX", "version": "10/10"}
 
 
-# ========== ФИРМЕННЫЕ ВИЗУАЛЫ КАНАЛА ==========
-VISUAL_DIR = "/tmp/aura_channel_visuals"
-VISUAL_DAY_LABELS = {
-    0: "Планы недели",
-    1: "Деньги и реализация",
-    2: "Отношения",
-    3: "Опора и состояние",
-    4: "Выбор и Таро",
-    5: "Самопознание",
-    6: "Итоги недели",
-}
-
-RUBRIC_VISUAL_META = {
-    "morning": {"label": "Утренний настрой", "icon": "✦", "accent": "dawn"},
-    "value": {"label": "Главный пост дня", "icon": "◐", "accent": "editorial"},
-    "evening": {"label": "Вечерняя рефлексия", "icon": "☾", "accent": "moon"},
-    "review": {"label": "Отзыв", "icon": "★", "accent": "review"},
-    "intro": {"label": "Добро пожаловать", "icon": "✦", "accent": "intro"},
+# ========== AI-ВИЗУАЛЫ КАНАЛА ==========
+CHANNEL_VISUAL_DIR = "/tmp/aura_channel_ai_images"
+CHANNEL_IMAGE_MODEL = os.getenv("CHANNEL_IMAGE_MODEL", "gpt-image-1").strip()
+CHANNEL_IMAGE_SIZE = os.getenv("CHANNEL_IMAGE_SIZE", "1024x1024").strip()
+CHANNEL_IMAGE_RUBRICS = {
+    item.strip().lower()
+    for item in os.getenv("CHANNEL_IMAGE_RUBRICS", "morning,value").split(",")
+    if item.strip()
 }
 
 
-def _load_visual_font(size, bold=False, serif=False):
-    from PIL import ImageFont
-    if serif:
-        candidates = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
-            "/usr/share/fonts/truetype/liberation2/LiberationSerif-Regular.ttf",
-        ]
-    elif bold:
-        candidates = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
-        ]
-    else:
-        candidates = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
-        ]
-    for path in candidates:
-        if os.path.exists(path):
-            return ImageFont.truetype(path, size)
-    return ImageFont.load_default()
+def channel_image_enabled(rubric):
+    return bool(OPENAI_KEY) and (rubric or "").lower() in CHANNEL_IMAGE_RUBRICS
 
 
-def _wrap_visual_text(draw, text, font, max_width, max_lines=4):
-    words = clean_display_text(text).split()
-    lines, current = [], ""
-    for word in words:
-        candidate = (current + " " + word).strip()
-        if current and draw.textlength(candidate, font=font) > max_width:
-            lines.append(current)
-            current = word
-            if len(lines) >= max_lines:
-                break
-        else:
-            current = candidate
-    if current and len(lines) < max_lines:
-        lines.append(current)
-    if len(lines) == max_lines and len(" ".join(lines)) < len(" ".join(words)):
-        lines[-1] = lines[-1].rstrip(".,") + "…"
-    return lines
+def build_channel_image_prompt(dt, rubric, theme, post_text=""):
+    style = (
+        "Premium mystical editorial illustration for a messenger channel about psychology, self-discovery and эзотерика. "
+        "Elegant, atmospheric, expensive-looking, emotionally rich. Deep indigo, dark violet and soft gold palette, "
+        "cinematic lighting, soft glow, polished composition, no cheap occult style. No text, no letters, no captions, no watermark, no logo. "
+        "Square 1:1 composition, high detail."
+    )
+    scene_map = {
+        "внутреннее состояние и планы недели": "a calm feminine scene with moonlight, a journal, soft light, inner balance and a feeling of clarity",
+        "деньги, самоценность и реализация": "an elegant symbolic prosperity scene with golden light, subtle sacred geometry, path energy, confidence and abundance without literal money spam",
+        "отношения, границы и близость": "an emotional relationship scene with two silhouettes, soft moonlight, intimacy, boundaries, tenderness and depth",
+        "тревога, усталость и опора на себя": "a calming reflective scene with a woman by a window, candle glow, soft shadows, emotional recovery and inner support",
+        "Таро, выбор и неопределённость": "a beautiful tarot-inspired scene with tarot cards on a table, candles, moonlight, mystical smoke and a sense of choice and intuition",
+        "самопознание, сильные стороны и предназначение": "a self-discovery scene with a feminine portrait, aura glow, celestial symbols, subtle golden geometry and intuitive depth",
+        "итоги недели, восстановление и новый цикл": "a reflective weekly reset scene with a journal, moonlight, candle, gentle night atmosphere, release and renewal",
+    }
+    scene = scene_map.get(theme, "a premium mystical psychology scene with elegant symbolism, moonlight and emotional depth")
+    rubric_note = {
+        "morning": "The image should feel fresh, inspiring and suitable for a morning post.",
+        "value": "The image should feel like the main visual of the day: stronger, more narrative and especially eye-catching.",
+        "evening": "The image should feel calm, reflective and suitable for an evening post.",
+        "review": "The image should feel warm, trustworthy and emotionally supportive.",
+        "intro": "The image should feel like a premium welcome visual for a new audience.",
+    }.get((rubric or "").lower(), "")
+    post_hint = truncate_at_sentence(post_text or theme, 220)
+    return (
+        f"{style} Scene: {scene}. {rubric_note} "
+        f"Topic context: {theme}. Post context: {post_hint}. "
+        "Create a beautiful standalone image only."
+    )
 
 
-def _visual_title_for_slot(dt, rubric, title):
-    base = clean_display_text(title or "").strip()
-    if rubric == "morning":
-        return f"{VISUAL_DAY_LABELS.get(dt.weekday(), 'День')} • настрой на день"
-    if rubric == "evening":
-        return f"{VISUAL_DAY_LABELS.get(dt.weekday(), 'День')} • мягкое завершение"
-    return base or VISUAL_DAY_LABELS.get(dt.weekday(), "Аура")
-
-
-def _draw_visual_accent(draw, accent, gold, violet):
-    if accent == "dawn":
-        for radius in (130, 185, 240):
-            draw.arc((860 - radius, 130 - radius, 860 + radius, 130 + radius), 8, 172, fill=gold, width=3)
-        draw.line((720, 130, 1000, 130), fill=(243, 224, 168, 170), width=2)
-    elif accent == "moon":
-        draw.ellipse((820, 70, 1085, 335), fill=(237, 227, 255, 22), outline=violet, width=3)
-        draw.ellipse((885, 70, 1150, 335), fill=(15, 6, 32, 0), outline=gold, width=3)
-    elif accent == "review":
-        points = [(790, 132), (850, 290), (1018, 290), (882, 388), (935, 548), (790, 455), (645, 548), (698, 388), (562, 290), (730, 290)]
-        for i in range(len(points)):
-            first = points[i]
-            second = points[(i + 1) % len(points)]
-            draw.line((*first, *second), fill=gold, width=3)
-    elif accent == "intro":
-        draw.rounded_rectangle((850, 95, 1090, 390), radius=28, outline=gold, width=4, fill=(24, 10, 48, 118))
-        draw.ellipse((920, 150, 1020, 250), outline=gold, width=3)
-        draw.line((970, 128, 970, 330), fill=gold, width=2)
-        draw.line((915, 200, 1025, 200), fill=gold, width=2)
-    else:
-        draw.ellipse((785, 120, 1045, 380), outline=violet, width=4)
-        draw.ellipse((895, 120, 1155, 380), outline=gold, width=4)
-
-
-def create_channel_visual(dt, rubric, title):
-    """Create premium editorial visuals locally for every channel post without external APIs."""
+async def create_channel_visual(dt, rubric, title, post_text=""):
+    """Generate a real AI image for selected channel posts. Return local image path or None."""
+    if not channel_image_enabled(rubric):
+        return None
     try:
-        from PIL import Image, ImageDraw, ImageFilter
-        import random
-        os.makedirs(VISUAL_DIR, exist_ok=True)
-        safe_rubric = (rubric or "value").replace("/", "_")
-        path = os.path.join(VISUAL_DIR, f"{dt.strftime('%Y%m%d')}_{safe_rubric}_premium.png")
+        import base64
+        os.makedirs(CHANNEL_VISUAL_DIR, exist_ok=True)
+        safe_rubric = re.sub(r"[^a-z0-9_-]+", "_", (rubric or "value").lower())
+        path = os.path.join(CHANNEL_VISUAL_DIR, f"{dt.strftime('%Y%m%d')}_{safe_rubric}_ai.png")
         if os.path.exists(path):
             return path
-        size = 1200
-        img = Image.new("RGB", (size, size), (15, 6, 32))
-        pixels = img.load()
-        for y in range(size):
-            for x in range(size):
-                dx, dy = x - 730, y - 480
-                radial = max(0.0, 1.0 - ((dx * dx + dy * dy) ** 0.5) / 920)
-                vertical = y / size
-                pixels[x, y] = (
-                    int(16 + 34 * radial + 10 * vertical),
-                    int(7 + 12 * radial),
-                    int(34 + 60 * radial + 20 * vertical),
-                )
-        glow = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-        glow_draw = ImageDraw.Draw(glow)
-        glow_draw.ellipse((590, 120, 1170, 720), fill=(156, 88, 255, 72))
-        glow_draw.ellipse((-220, 760, 420, 1380), fill=(87, 39, 160, 58))
-        glow = glow.filter(ImageFilter.GaussianBlur(88))
-        img = Image.alpha_composite(img.convert("RGBA"), glow)
-        draw = ImageDraw.Draw(img, "RGBA")
-        rnd = random.Random(int(dt.strftime("%Y%m%d")) + sum(ord(ch) for ch in safe_rubric) * 13)
-        for _ in range(110):
-            x, y = rnd.randint(30, 1170), rnd.randint(30, 1170)
-            radius = rnd.choice((1, 1, 1, 2, 2, 3))
-            alpha = rnd.randint(60, 180)
-            draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=(239, 220, 255, alpha))
-        gold = (222, 187, 116, 208)
-        violet = (199, 161, 255, 180)
-        meta = RUBRIC_VISUAL_META.get(rubric, RUBRIC_VISUAL_META["value"])
-        _draw_visual_accent(draw, meta["accent"], gold, violet)
-        brand = _load_visual_font(31, bold=True)
-        title_font = _load_visual_font(64, bold=True)
-        serif = _load_visual_font(31, serif=True)
-        small = _load_visual_font(27)
-        micro = _load_visual_font(25)
-        draw.text((78, 72), "АУРА — ПСИХОЛОГИЯ", font=brand, fill=(232, 211, 255, 240))
-        draw.line((78, 125, 510, 125), fill=(221, 187, 116, 185), width=2)
-        panel = (65, 350, 1135, 1018)
-        draw.rounded_rectangle(panel, radius=42, fill=(18, 8, 39, 176), outline=(218, 187, 244, 90), width=2)
-        draw.text((105, 402), f"{meta['icon']} {meta['label'].upper()}", font=small, fill=(222, 187, 116, 235))
-        title_text = _visual_title_for_slot(dt, rubric, title)
-        y_pos = 492
-        for line in _wrap_visual_text(draw, title_text, title_font, 910, 4):
-            draw.text((105, y_pos), line, font=title_font, fill=(255, 255, 255, 245))
-            y_pos += 86
-        draw.text((105, 918), "Пойми себя • найди опору • сделай следующий шаг", font=serif, fill=(222, 208, 236, 235))
-        draw.text((78, 1098), VISUAL_DAY_LABELS.get(dt.weekday(), "Аура") + " • практика • психология • самопознание", font=micro, fill=(203, 178, 224, 220))
-        img.convert("RGB").save(path, quality=95)
+        prompt = build_channel_image_prompt(dt, rubric, title, post_text)
+        base_url = str(openai_client.base_url).rstrip("/")
+        url = f"{base_url}/images/generations"
+        payload = {"model": CHANNEL_IMAGE_MODEL, "prompt": prompt, "size": CHANNEL_IMAGE_SIZE}
+        headers = {"Authorization": f"Bearer {OPENAI_KEY}", "Content-Type": "application/json"}
+        async with httpx.AsyncClient(timeout=180) as client:
+            response = await client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+        items = data.get("data") or []
+        if not items:
+            raise RuntimeError(f"empty image response: {data}")
+        item = items[0]
+        if item.get("b64_json"):
+            image_bytes = base64.b64decode(item["b64_json"])
+        elif item.get("url"):
+            async with httpx.AsyncClient(timeout=120) as client:
+                img_response = await client.get(item["url"])
+                img_response.raise_for_status()
+                image_bytes = img_response.content
+        else:
+            raise RuntimeError(f"unsupported image payload: {item}")
+        if not image_bytes or len(image_bytes) < 5000:
+            raise RuntimeError("generated image is too small or empty")
+        with open(path, "wb") as f:
+            f.write(image_bytes)
         return path
     except Exception as exc:
-        logging.exception("Визуал канала: %s", exc)
+        logging.warning("AI channel visual failed for %s/%s: %s", dt.strftime("%Y-%m-%d"), rubric, exc)
         return None
+
 
 def get_recent_reviews(limit=10):
     try:
@@ -3045,7 +2979,7 @@ async def publish_channel_slot(dt, rubric):
     text = await generate_channel_post(dt, rubric)
     button_text, start_payload = WEEKLY_FUNNEL[dt.weekday()][rubric]
     try:
-        visual = create_channel_visual(dt, rubric, WEEKLY_FUNNEL[dt.weekday()]["theme"])
+        visual = await create_channel_visual(dt, rubric, WEEKLY_FUNNEL[dt.weekday()]["theme"], text)
         await send_to_channel(text, button_text, start_payload, visual)
         save_channel_post(key, rubric, extract_topic(text), text, "sent")
         return True
@@ -3070,7 +3004,7 @@ async def publish_saved_review(review_id):
             f"— {first_name}, имя опубликовано с разрешения автора."
         )
         visual_dt = datetime.now(MOSCOW)
-        visual = create_channel_visual(visual_dt, "review", "Реальный отзыв об Ауре")
+        visual = await create_channel_visual(visual_dt, "review", "Реальный отзыв об Ауре", text)
         await send_to_channel(text, "🎁 Попробовать Ауру бесплатно", "channel_intro", visual)
         return True
     except Exception as exc:
@@ -3098,7 +3032,7 @@ async def publish_channel_intro():
     try:
         image_path = str(INTRO_IMAGE_PATH) if INTRO_IMAGE_PATH.exists() else None
         if not image_path:
-            image_path = create_channel_visual(datetime.now(MOSCOW), "intro", "Aura — психология и личные разборы")
+            image_path = await create_channel_visual(datetime.now(MOSCOW), "intro", "Aura — психология и личные разборы", text)
         await send_to_channel(text, "🎁 Начать бесплатный личный разбор", "channel_intro", image_path)
         return True
     except Exception as exc:
