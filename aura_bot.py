@@ -344,7 +344,7 @@ def sheets_log_sale(user_id, first_name, plan, amount, sub_end, platform):
 logging.basicConfig(level=logging.INFO)
 
 # ========== КЛИЕНТЫ AI ==========
-openai_client = AsyncOpenAI(api_key=OPENAI_KEY, base_url="https://api.proxyapi.ru/openai/v1")
+openai_client = AsyncOpenAI(api_key=OPENAI_KEY)
 claude_client = anthropic.Anthropic(api_key=CLAUDE_KEY) if CLAUDE_KEY else None
 
 # ========== TELEGRAM API ==========
