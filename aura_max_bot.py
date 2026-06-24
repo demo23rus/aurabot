@@ -77,7 +77,6 @@ def clean_display_text(text):
 
 BASE_DIR = Path(__file__).resolve().parent
 AURA_ASSET_DIR = Path(os.getenv("AURA_ASSET_DIR", str(BASE_DIR / "aura_assets")))
-INTRO_IMAGE_PATH = AURA_ASSET_DIR / "aura_intro_premium.png"
 
 ZODIAC_SIGNS = (
     "Овен", "Телец", "Близнецы", "Рак", "Лев", "Дева",
@@ -352,7 +351,7 @@ def sheets_log_sale(user_id, first_name, plan, amount, sub_end, platform):
 logging.basicConfig(level=logging.INFO)
 
 # ========== КЛИЕНТЫ AI ==========
-openai_client = AsyncOpenAI(api_key=OPENAI_KEY)
+openai_client = AsyncOpenAI(api_key=OPENAI_KEY, base_url="https://api.proxyapi.ru/openai/v1")
 claude_client = anthropic.Anthropic(api_key=CLAUDE_KEY) if CLAUDE_KEY else None
 
 # Фоновые задачи webhook: MAX должен получать HTTP 200 сразу,
@@ -2697,7 +2696,6 @@ async def health():
 
 
 # ========== ФИРМЕННЫЕ ВИЗУАЛЫ КАНАЛА ==========
-VISUAL_DIR = "/tmp/aura_channel_visuals"
 VISUAL_DAY_LABELS = {
     0: "Планы недели",
     1: "Деньги и реализация",
@@ -2708,152 +2706,77 @@ VISUAL_DAY_LABELS = {
     6: "Итоги недели",
 }
 
-RUBRIC_VISUAL_META = {
-    "morning": {"label": "Утренний настрой", "icon": "✦", "accent": "dawn"},
-    "value": {"label": "Главный пост дня", "icon": "◐", "accent": "editorial"},
-    "evening": {"label": "Вечерняя рефлексия", "icon": "☾", "accent": "moon"},
-    "review": {"label": "Отзыв", "icon": "★", "accent": "review"},
-    "intro": {"label": "Добро пожаловать", "icon": "✦", "accent": "intro"},
+
+
+IMAGES_DIR = "/root/aura_images"
+
+CATEGORY_MAP = {
+    "forecast": "forecast",
+    "psychology": "psychology",
+    "money": "money",
+    "relationships": "relationships",
+    "tarot": "tarot",
+    "numerology": "numerology",
+    "self_discovery": "self_discovery",
+    "dreams": "dream",
+    "dream": "dream",
+    "taro": "tarot",
+    "psycho": "psychology",
+    "love": "relationships",
+    "morning": "forecast",
+    "evening": "psychology",
+    "value": "self_discovery",
+    "intro": "self_discovery",
+    "diary": "psychology",
 }
 
 
-def _load_visual_font(size, bold=False, serif=False):
-    from PIL import ImageFont
-    if serif:
-        candidates = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
-            "/usr/share/fonts/truetype/liberation2/LiberationSerif-Regular.ttf",
-        ]
-    elif bold:
-        candidates = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
-        ]
-    else:
-        candidates = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
-        ]
-    for path in candidates:
-        if os.path.exists(path):
-            return ImageFont.truetype(path, size)
-    return ImageFont.load_default()
-
-
-def _wrap_visual_text(draw, text, font, max_width, max_lines=4):
-    words = clean_display_text(text).split()
-    lines, current = [], ""
-    for word in words:
-        candidate = (current + " " + word).strip()
-        if current and draw.textlength(candidate, font=font) > max_width:
-            lines.append(current)
-            current = word
-            if len(lines) >= max_lines:
-                break
-        else:
-            current = candidate
-    if current and len(lines) < max_lines:
-        lines.append(current)
-    if len(lines) == max_lines and len(" ".join(lines)) < len(" ".join(words)):
-        lines[-1] = lines[-1].rstrip(".,") + "…"
-    return lines
-
-
-def _visual_title_for_slot(dt, rubric, title):
-    base = clean_display_text(title or "").strip()
-    if rubric == "morning":
-        return f"{VISUAL_DAY_LABELS.get(dt.weekday(), 'День')} • настрой на день"
-    if rubric == "evening":
-        return f"{VISUAL_DAY_LABELS.get(dt.weekday(), 'День')} • мягкое завершение"
-    return base or VISUAL_DAY_LABELS.get(dt.weekday(), "Аура")
-
-
-def _draw_visual_accent(draw, accent, gold, violet):
-    if accent == "dawn":
-        for radius in (130, 185, 240):
-            draw.arc((860 - radius, 130 - radius, 860 + radius, 130 + radius), 8, 172, fill=gold, width=3)
-        draw.line((720, 130, 1000, 130), fill=(243, 224, 168, 170), width=2)
-    elif accent == "moon":
-        draw.ellipse((820, 70, 1085, 335), fill=(237, 227, 255, 22), outline=violet, width=3)
-        draw.ellipse((885, 70, 1150, 335), fill=(15, 6, 32, 0), outline=gold, width=3)
-    elif accent == "review":
-        points = [(790, 132), (850, 290), (1018, 290), (882, 388), (935, 548), (790, 455), (645, 548), (698, 388), (562, 290), (730, 290)]
-        for i in range(len(points)):
-            first = points[i]
-            second = points[(i + 1) % len(points)]
-            draw.line((*first, *second), fill=gold, width=3)
-    elif accent == "intro":
-        draw.rounded_rectangle((850, 95, 1090, 390), radius=28, outline=gold, width=4, fill=(24, 10, 48, 118))
-        draw.ellipse((920, 150, 1020, 250), outline=gold, width=3)
-        draw.line((970, 128, 970, 330), fill=gold, width=2)
-        draw.line((915, 200, 1025, 200), fill=gold, width=2)
-    else:
-        draw.ellipse((785, 120, 1045, 380), outline=violet, width=4)
-        draw.ellipse((895, 120, 1155, 380), outline=gold, width=4)
-
-
-def create_channel_visual(dt, rubric, title):
-    """Create premium editorial visuals locally for every channel post without external APIs."""
-    try:
-        from PIL import Image, ImageDraw, ImageFilter
-        import random
-        os.makedirs(VISUAL_DIR, exist_ok=True)
-        safe_rubric = (rubric or "value").replace("/", "_")
-        path = os.path.join(VISUAL_DIR, f"{dt.strftime('%Y%m%d')}_{safe_rubric}_premium.png")
-        if os.path.exists(path):
-            return path
-        size = 1200
-        img = Image.new("RGB", (size, size), (15, 6, 32))
-        pixels = img.load()
-        for y in range(size):
-            for x in range(size):
-                dx, dy = x - 730, y - 480
-                radial = max(0.0, 1.0 - ((dx * dx + dy * dy) ** 0.5) / 920)
-                vertical = y / size
-                pixels[x, y] = (
-                    int(16 + 34 * radial + 10 * vertical),
-                    int(7 + 12 * radial),
-                    int(34 + 60 * radial + 20 * vertical),
-                )
-        glow = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-        glow_draw = ImageDraw.Draw(glow)
-        glow_draw.ellipse((590, 120, 1170, 720), fill=(156, 88, 255, 72))
-        glow_draw.ellipse((-220, 760, 420, 1380), fill=(87, 39, 160, 58))
-        glow = glow.filter(ImageFilter.GaussianBlur(88))
-        img = Image.alpha_composite(img.convert("RGBA"), glow)
-        draw = ImageDraw.Draw(img, "RGBA")
-        rnd = random.Random(int(dt.strftime("%Y%m%d")) + sum(ord(ch) for ch in safe_rubric) * 13)
-        for _ in range(110):
-            x, y = rnd.randint(30, 1170), rnd.randint(30, 1170)
-            radius = rnd.choice((1, 1, 1, 2, 2, 3))
-            alpha = rnd.randint(60, 180)
-            draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=(239, 220, 255, alpha))
-        gold = (222, 187, 116, 208)
-        violet = (199, 161, 255, 180)
-        meta = RUBRIC_VISUAL_META.get(rubric, RUBRIC_VISUAL_META["value"])
-        _draw_visual_accent(draw, meta["accent"], gold, violet)
-        brand = _load_visual_font(31, bold=True)
-        title_font = _load_visual_font(64, bold=True)
-        serif = _load_visual_font(31, serif=True)
-        small = _load_visual_font(27)
-        micro = _load_visual_font(25)
-        draw.text((78, 72), "АУРА — ПСИХОЛОГИЯ", font=brand, fill=(232, 211, 255, 240))
-        draw.line((78, 125, 510, 125), fill=(221, 187, 116, 185), width=2)
-        panel = (65, 350, 1135, 1018)
-        draw.rounded_rectangle(panel, radius=42, fill=(18, 8, 39, 176), outline=(218, 187, 244, 90), width=2)
-        draw.text((105, 402), f"{meta['icon']} {meta['label'].upper()}", font=small, fill=(222, 187, 116, 235))
-        title_text = _visual_title_for_slot(dt, rubric, title)
-        y_pos = 492
-        for line in _wrap_visual_text(draw, title_text, title_font, 910, 4):
-            draw.text((105, y_pos), line, font=title_font, fill=(255, 255, 255, 245))
-            y_pos += 86
-        draw.text((105, 918), "Пойми себя • найди опору • сделай следующий шаг", font=serif, fill=(222, 208, 236, 235))
-        draw.text((78, 1098), VISUAL_DAY_LABELS.get(dt.weekday(), "Аура") + " • практика • психология • самопознание", font=micro, fill=(203, 178, 224, 220))
-        img.convert("RGB").save(path, quality=95)
-        return path
-    except Exception as exc:
-        logging.exception("Визуал канала: %s", exc)
+def get_post_image(rubric: str) -> str | None:
+    """Возвращает путь к картинке для поста. Не повторяет недавно использованные."""
+    import random
+    category = CATEGORY_MAP.get(rubric, rubric)
+    folder = os.path.join(IMAGES_DIR, category)
+    if not os.path.isdir(folder):
         return None
+    exts = {".jpg", ".jpeg", ".png", ".webp"}
+    files = [f for f in os.listdir(folder) if os.path.splitext(f)[1].lower() in exts]
+    if not files:
+        return None
+    # Получаем историю использованных
+    try:
+        conn = sqlite3.connect(DB)
+        c = conn.cursor()
+        c.execute("""CREATE TABLE IF NOT EXISTS image_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category TEXT,
+            filename TEXT,
+            used_at TEXT
+        )""")
+        c.execute("""SELECT filename FROM image_history
+                     WHERE category=? ORDER BY used_at DESC LIMIT ?""",
+                  (category, max(1, len(files) // 2)))
+        recent = {row[0] for row in c.fetchall()}
+        conn.close()
+    except Exception:
+        recent = set()
+    # Выбираем из неиспользованных
+    available = [f for f in files if f not in recent]
+    if not available:
+        available = files  # если все использованы — сбрасываем
+    chosen = random.choice(available)
+    # Записываем в историю
+    try:
+        conn = sqlite3.connect(DB)
+        conn.execute("INSERT INTO image_history (category, filename, used_at) VALUES (?,?,?)",
+                     (category, chosen, datetime.now().isoformat()))
+        # Чистим старые записи
+        conn.execute("DELETE FROM image_history WHERE id NOT IN (SELECT id FROM image_history ORDER BY used_at DESC LIMIT 200)")
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+    return os.path.join(folder, chosen)
+
 
 def get_recent_reviews(limit=10):
     try:
@@ -2915,6 +2838,25 @@ def native_channel_button(text, payload):
     return [[{"type": "link", "text": text[:40], "url": channel_deep_link(payload)}]]
 
 
+def extract_max_upload_token(data) -> str | None:
+    """Рекурсивно ищет token в ответе MAX /uploads."""
+    if isinstance(data, str):
+        return data if len(data) > 10 else None
+    if isinstance(data, dict):
+        if "token" in data:
+            return data["token"]
+        for v in data.values():
+            result = extract_max_upload_token(v)
+            if result:
+                return result
+    if isinstance(data, list):
+        for item in data:
+            result = extract_max_upload_token(item)
+            if result:
+                return result
+    return None
+
+
 async def send_to_channel(text, button_text, start_payload, image_path=None):
     headers = {"Authorization": MAX_TOKEN, "Content-Type": "application/json"}
     attachments = []
@@ -2925,10 +2867,14 @@ async def send_to_channel(text, button_text, start_payload, image_path=None):
                 meta.raise_for_status()
                 upload_url = meta.json().get("url")
                 with open(image_path, "rb") as file_handle:
-                    uploaded = await client.post(upload_url, files={"data": ("aura.png", file_handle, "image/png")})
+                    uploaded = await client.post(upload_url, files={"data": (os.path.basename(image_path), file_handle, (
+                        "image/jpeg" if image_path.lower().endswith((".jpg", ".jpeg")) else
+                        "image/webp" if image_path.lower().endswith(".webp") else
+                        "image/png"
+                    ))})
                 uploaded.raise_for_status()
                 upload_data = uploaded.json()
-                token = upload_data.get("token") or upload_data.get("payload", {}).get("token")
+                token = extract_max_upload_token(upload_data)
                 if token:
                     attachments.append({"type": "image", "payload": {"token": token}})
         except Exception as exc:
@@ -3045,7 +2991,14 @@ async def publish_channel_slot(dt, rubric):
     text = await generate_channel_post(dt, rubric)
     button_text, start_payload = WEEKLY_FUNNEL[dt.weekday()][rubric]
     try:
-        visual = create_channel_visual(dt, rubric, WEEKLY_FUNNEL[dt.weekday()]["theme"])
+        # Картинка только для утреннего и вечернего поста
+        visual = None
+        weekday = dt.weekday()
+        if rubric == "morning" and weekday in DAILY_IMAGE_SCHEDULE:
+            visual = get_post_image(DAILY_IMAGE_SCHEDULE[weekday]["morning"])
+        elif rubric == "evening" and weekday in DAILY_IMAGE_SCHEDULE:
+            visual = get_post_image(DAILY_IMAGE_SCHEDULE[weekday]["evening"])
+        # Дневной пост — без картинки
         await send_to_channel(text, button_text, start_payload, visual)
         save_channel_post(key, rubric, extract_topic(text), text, "sent")
         return True
@@ -3070,7 +3023,7 @@ async def publish_saved_review(review_id):
             f"— {first_name}, имя опубликовано с разрешения автора."
         )
         visual_dt = datetime.now(MOSCOW)
-        visual = create_channel_visual(visual_dt, "review", "Реальный отзыв об Ауре")
+        visual = get_post_image(rubric)
         await send_to_channel(text, "🎁 Попробовать Ауру бесплатно", "channel_intro", visual)
         return True
     except Exception as exc:
@@ -3096,9 +3049,7 @@ async def publish_channel_intro():
 
 Нажми кнопку и выбери то, что волнует тебя сейчас."""
     try:
-        image_path = str(INTRO_IMAGE_PATH) if INTRO_IMAGE_PATH.exists() else None
-        if not image_path:
-            image_path = create_channel_visual(datetime.now(MOSCOW), "intro", "Aura — психология и личные разборы")
+        image_path = get_post_image("self_discovery")
         await send_to_channel(text, "🎁 Начать бесплатный личный разбор", "channel_intro", image_path)
         return True
     except Exception as exc:
