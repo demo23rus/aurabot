@@ -485,6 +485,16 @@ def db_connect():
     """Единое подключение к SQLite с таймаутом и Row-friendly defaults."""
     return sqlite3.connect(DB, timeout=10)
 
+def log_event(user_id, event, feature="", source="", value=""):
+    try:
+        with db_connect() as conn:
+            conn.execute(
+                "INSERT INTO analytics_events (user_id,event,feature,source,value,created_at) VALUES (?,?,?,?,?,?)",
+                (user_id, event, feature, source, str(value)[:500], datetime.now().isoformat())
+            )
+    except Exception as e:
+        logging.error(f"analytics: {e}")
+
 def init_db():
     conn = sqlite3.connect(DB)
     c = conn.cursor()
@@ -613,6 +623,15 @@ def init_db():
         timezone TEXT NOT NULL,
         display_name TEXT DEFAULT '',
         updated_at TEXT NOT NULL
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS analytics_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        event TEXT,
+        feature TEXT DEFAULT '',
+        source TEXT DEFAULT '',
+        value TEXT DEFAULT '',
+        created_at TEXT
     )""")
     conn.commit()
     c.execute("PRAGMA journal_mode=WAL")
