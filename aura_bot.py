@@ -2525,6 +2525,17 @@ CATEGORY_MAP = {
 }
 
 
+DAILY_IMAGE_SCHEDULE = {
+    0: {"morning": "forecast",      "evening": "psychology"},
+    1: {"morning": "money",         "evening": "money"},
+    2: {"morning": "relationships", "evening": "relationships"},
+    3: {"morning": "psychology",    "evening": "psychology"},
+    4: {"morning": "tarot",         "evening": "tarot"},
+    5: {"morning": "numerology",    "evening": "numerology"},
+    6: {"morning": "forecast",      "evening": "self_discovery"},
+}
+
+
 def get_post_image(rubric: str) -> str | None:
     """Возвращает путь к картинке для поста. Не повторяет недавно использованные."""
     import random
@@ -2755,8 +2766,12 @@ async def publish_channel_slot(dt, rubric):
         save_channel_post(key, rubric, extract_topic(text), text, "sent")
         return True
     except Exception as exc:
+        logging.error(f"❌ Ошибка публикации поста {key}: {exc}", exc_info=True)
         save_channel_post(key, rubric, extract_topic(text), text, "failed")
-        await notify_owner("⚠️ Не вышел пост в Telegram-канале", 0, rubric, f"{key}: {exc}")
+        try:
+            await notify_owner("⚠️ Не вышел пост в Telegram-канале", 0, rubric, f"{key}: {exc}")
+        except Exception as notify_err:
+            logging.error(f"Не удалось уведомить владельца: {notify_err}")
         return False
 
 
@@ -2775,7 +2790,7 @@ async def publish_saved_review(review_id):
             f"— {first_name}, имя опубликовано с разрешения автора."
         )
         visual_dt = datetime.now(MOSCOW)
-        visual = get_post_image(rubric)
+        visual = get_post_image("self_discovery")
         await send_to_channel(text, "🎁 Попробовать Ауру бесплатно", "channel_intro", visual)
         return True
     except Exception as exc:
