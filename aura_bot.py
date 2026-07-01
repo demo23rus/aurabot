@@ -238,9 +238,9 @@ YOOKASSA_SECRET = os.getenv("YOOKASSA_SECRET", "").strip()
 # ========== GOOGLE SHEETS — ОДНА КОМПАКТНАЯ ТАБЛИЦА ==========
 GOOGLE_CREDS_PATH = "/root/google_credentials.json"
 SPREADSHEET_NAME = 'Аура ТГ'
-GOOGLE_SPREADSHEET_ID = os.getenv("AURA_TG_SPREADSHEET_ID", "").strip()
-GOOGLE_SHEETS_OWNER_EMAIL = os.getenv("GOOGLE_SHEETS_OWNER_EMAIL", "").strip()
-DATA_SHEET_NAME = "Данные"
+GOOGLE_SPREADSHEET_ID = os.getenv("GOOGLE_SPREADSHEET_ID", "").strip()
+
+DATA_SHEET_NAME = "Аура ТГ"
 SHEET_HEADERS = ["Дата", "ID", "Платежи", "Отзывы"]
 
 # Старый общий GOOGLE_SPREADSHEET_ID намеренно не используется:
@@ -270,25 +270,13 @@ def _open_spreadsheet():
         if GOOGLE_SPREADSHEET_ID:
             spreadsheet = gc.open_by_key(GOOGLE_SPREADSHEET_ID)
         else:
-            try:
-                spreadsheet = gc.open(SPREADSHEET_NAME)
-            except gspread.SpreadsheetNotFound:
-                spreadsheet = gc.create(SPREADSHEET_NAME)
-                if GOOGLE_SHEETS_OWNER_EMAIL:
-                    try:
-                        spreadsheet.share(
-                            GOOGLE_SHEETS_OWNER_EMAIL,
-                            perm_type="user",
-                            role="writer",
-                            notify=False,
-                        )
-                    except Exception as share_error:
-                        logging.error("Google Sheets share error: %s", share_error)
+            spreadsheet = gc.open(SPREADSHEET_NAME)
 
         _SPREADSHEET_CACHE = spreadsheet
         logging.info(
-            "Google Sheets подключена: %s | %s",
+            "Google Sheets подключена: %s / лист %s | %s",
             SPREADSHEET_NAME,
+            DATA_SHEET_NAME,
             getattr(spreadsheet, "url", "URL недоступен"),
         )
         return spreadsheet
@@ -494,8 +482,9 @@ def sheets_rebuild_from_db():
                 pass
 
         logging.info(
-            "Google Sheets восстановлена: %s, строк пользователей: %s",
+            "Google Sheets восстановлена: %s / лист %s, строк пользователей: %s",
             SPREADSHEET_NAME,
+            DATA_SHEET_NAME,
             len(rows),
         )
     except Exception as e:
