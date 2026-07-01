@@ -240,111 +240,272 @@ START_PHOTO = 5
 YOOKASSA_SHOP_ID = "1363324"
 YOOKASSA_SECRET = os.getenv("YOOKASSA_SECRET", "").strip()
 
-# ========== GOOGLE SHEETS — КОМПАКТНАЯ КОММЕРЧЕСКАЯ АНАЛИТИКА ==========
+# ========== GOOGLE SHEETS — ОДНА КОМПАКТНАЯ ТАБЛИЦА ==========
 GOOGLE_CREDS_PATH = "/root/google_credentials.json"
-SPREADSHEET_NAME = "PostGenius Users"
-GOOGLE_SPREADSHEET_ID = os.getenv("GOOGLE_SPREADSHEET_ID", "").strip()
-USERS_SHEET_NAME = "Aura MAX"
-SALES_SHEET_NAME = "Продажи Aura"
+SPREADSHEET_NAME = 'Аура Макс'
+GOOGLE_SPREADSHEET_ID = os.getenv("AURA_MAX_SPREADSHEET_ID", "").strip()
+GOOGLE_SHEETS_OWNER_EMAIL = os.getenv("GOOGLE_SHEETS_OWNER_EMAIL", "").strip()
+DATA_SHEET_NAME = "Данные"
+SHEET_HEADERS = ["Дата", "ID", "Платежи", "Отзывы"]
 
-USERS_HEADERS = ["Последнее посещение", "ID", "Имя", "Username", "Запросы", "Подписка", "До", "Отзыв"]
-SALES_HEADERS = ["Дата", "Платформа", "ID", "Имя", "Тариф", "Сумма", "Подписка до", "Источник"]
+# Старый общий GOOGLE_SPREADSHEET_ID намеренно не используется:
+# Telegram и MAX должны вести две независимые таблицы.
+import threading
+_SHEETS_LOCK = threading.RLock()
+_SPREADSHEET_CACHE = None
+
+
+def _google_client():
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    creds = Credentials.from_service_account_file(GOOGLE_CREDS_PATH, scopes=scopes)
+    return gspread.authorize(creds)
+
 
 def _open_spreadsheet():
-    # При заданном GOOGLE_SPREADSHEET_ID таблица открывается напрямую через Sheets API.
-    # Это не требует поиска файла по названию через Google Drive API.
-    if GOOGLE_SPREADSHEET_ID:
-        scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-        creds = Credentials.from_service_account_file(GOOGLE_CREDS_PATH, scopes=scopes)
-        gc = gspread.authorize(creds)
-        return gc.open_by_key(GOOGLE_SPREADSHEET_ID)
+    """Открыть или автоматически создать отдельную таблицу Aura."""
+    global _SPREADSHEET_CACHE
+    with _SHEETS_LOCK:
+        if _SPREADSHEET_CACHE is not None:
+            return _SPREADSHEET_CACHE
 
-    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    creds = Credentials.from_service_account_file(GOOGLE_CREDS_PATH, scopes=scopes)
-    gc = gspread.authorize(creds)
-    return gc.open(SPREADSHEET_NAME)
+        gc = _google_client()
+        if GOOGLE_SPREADSHEET_ID:
+            spreadsheet = gc.open_by_key(GOOGLE_SPREADSHEET_ID)
+        else:
+            try:
+                spreadsheet = gc.open(SPREADSHEET_NAME)
+            except gspread.SpreadsheetNotFound:
+                spreadsheet = gc.create(SPREADSHEET_NAME)
+                if GOOGLE_SHEETS_OWNER_EMAIL:
+                    try:
+                        spreadsheet.share(
+                            GOOGLE_SHEETS_OWNER_EMAIL,
+                            perm_type="user",
+                            role="writer",
+                            notify=False,
+                        )
+                    except Exception as share_error:
+                        logging.error("Google Sheets share error: %s", share_error)
 
-def _get_or_create_sheet(title, headers, rows=2000):
+        _SPREADSHEET_CACHE = spreadsheet
+        logging.info(
+            "Google Sheets подключена: %s | %s",
+            SPREADSHEET_NAME,
+            getattr(spreadsheet, "url", "URL недоступен"),
+        )
+        return spreadsheet
+
+
+def _get_data_sheet():
     spreadsheet = _open_spreadsheet()
     try:
-        ws = spreadsheet.worksheet(title)
+        ws = spreadsheet.worksheet(DATA_SHEET_NAME)
     except gspread.WorksheetNotFound:
-        ws = spreadsheet.add_worksheet(title=title, rows=rows, cols=max(10, len(headers) + 2))
-        ws.append_row(headers)
-    current = ws.row_values(1)
-    if current != headers:
-        ws.update("A1", [headers])
+        default_ws = spreadsheet.sheet1
+        if default_ws.title in ("Sheet1", "Лист1") and not default_ws.get_all_values():
+            default_ws.update_title(DATA_SHEET_NAME)
+            ws = default_ws
+        else:
+            ws = spreadsheet.add_worksheet(
+                title=DATA_SHEET_NAME,
+                rows=3000,
+                cols=len(SHEET_HEADERS),
+            )
+
+    if ws.row_values(1) != SHEET_HEADERS:
+        ws.update("A1:D1", [SHEET_HEADERS])
+        try:
+            ws.freeze(rows=1)
+        except Exception:
+            pass
     return ws
 
-def _sheet_row_by_user(ws, user_id):
-    ids = ws.col_values(2)
-    uid = str(user_id)
-    for index, value in enumerate(ids[1:], start=2):
-        if value == uid:
-            return index
-    return None
 
-def _usage_count(user_id):
-    try:
-        lim = get_limits(user_id)
-        return int(lim.get("requests", 0)) + int(lim.get("psycho", 0)) + int(lim.get("chiromancy", 0)) + int(lim.get("physio", 0)) + int(lim.get("grapho", 0))
-    except Exception:
-        return 0
+def _sheet_rows_by_user(ws):
+    rows = {}
+    for row_number, row in enumerate(ws.get_all_values()[1:], start=2):
+        if len(row) > 1 and row[1].strip():
+            rows[row[1].strip()] = row_number
+    return rows
+
+
+def _trim_history(value, limit=5):
+    items = [item.strip() for item in str(value or "").split("\n") if item.strip()]
+    return "\n".join(items[-limit:])
+
+
+def _append_history(old_value, new_value, limit=5):
+    items = [item.strip() for item in str(old_value or "").split("\n") if item.strip()]
+    if new_value and new_value.strip():
+        items.append(new_value.strip())
+    return "\n".join(items[-limit:])
+
+
+def _upsert_compact_row(user_id, visit_date=None, payment_entry=None, review_entry=None):
+    """Одна строка на пользователя: дата, ID, платежи и отзывы."""
+    with _SHEETS_LOCK:
+        ws = _get_data_sheet()
+        row_map = _sheet_rows_by_user(ws)
+        row_number = row_map.get(str(user_id))
+
+        old = ["", str(user_id), "", ""]
+        if row_number:
+            current = ws.row_values(row_number)
+            old = (current + ["", "", "", ""])[:4]
+
+        values = [
+            visit_date or old[0] or datetime.now().strftime("%d.%m.%Y %H:%M"),
+            str(user_id),
+            _append_history(old[2], payment_entry) if payment_entry else _trim_history(old[2]),
+            _append_history(old[3], review_entry) if review_entry else _trim_history(old[3]),
+        ]
+
+        if row_number:
+            ws.update(f"A{row_number}:D{row_number}", [values])
+        else:
+            ws.append_row(values, value_input_option="USER_ENTERED")
+
 
 def sheets_sync_user(user_id, first_name="", username="", review_text=None):
-    """Одна строка на пользователя: посещение, запросы, подписка и отзыв."""
     try:
-        ws = _get_or_create_sheet(USERS_SHEET_NAME, USERS_HEADERS)
-        plan, sub_end = get_subscription(user_id)
-        plan_name = {"aura_start": "Старт", "aura_pro": "Про"}.get(plan, "Бесплатный")
-        until = sub_end.strftime("%d.%m.%Y") if sub_end else "—"
-        row = _sheet_row_by_user(ws, user_id)
-        old_review = ""
-        if row:
-            old_review = ws.cell(row, 8).value or ""
-        values = [
-            datetime.now().strftime("%d.%m.%Y %H:%M"),
-            str(user_id),
-            first_name or "—",
-            ("@" + username) if username else "—",
-            str(_usage_count(user_id)),
-            plan_name,
-            until,
-            review_text if review_text is not None else old_review,
-        ]
-        if row:
-            ws.update(f"A{row}:H{row}", [values])
-        else:
-            ws.append_row(values)
+        review_entry = None
+        if review_text is not None:
+            review_entry = (
+                f"{datetime.now().strftime('%d.%m.%Y')}: "
+                f"{str(review_text).strip()[:700]}"
+            )
+        _upsert_compact_row(
+            user_id,
+            visit_date=datetime.now().strftime("%d.%m.%Y %H:%M"),
+            review_entry=review_entry,
+        )
     except Exception as e:
-        logging.error(f"Google Sheets user sync: {e}")
+        logging.error("Google Sheets user sync: %s", e)
 
-def sheets_log_visit(user_id, first_name, username, plan=None):
+
+def sheets_log_visit(user_id, first_name="", username="", plan=None):
     sheets_sync_user(user_id, first_name, username)
 
-def sheets_log_review(user_id, first_name, username, review_text):
-    sheets_sync_user(user_id, first_name, username, review_text=review_text[:1000])
 
-def get_user_source(user_id):
-    try:
-        with sqlite3.connect(DB) as conn:
-            row = conn.execute("SELECT source FROM user_profiles WHERE user_id=?", (user_id,)).fetchone()
-        return (row[0] or "—") if row else "—"
-    except Exception:
-        return "—"
+def sheets_log_review(user_id, first_name, username, review_text):
+    sheets_sync_user(
+        user_id,
+        first_name,
+        username,
+        review_text=review_text,
+    )
 
 
 def sheets_log_sale(user_id, first_name, plan, amount, sub_end, platform):
     try:
-        ws = _get_or_create_sheet(SALES_SHEET_NAME, SALES_HEADERS)
-        plan_name = {"aura_start": "Старт", "aura_pro": "Про", "aura_pro_year": "Про на год"}.get(plan, plan)
-        ws.append_row([
-            datetime.now().strftime("%d.%m.%Y %H:%M"), platform, str(user_id), first_name or "—",
-            plan_name, f"{amount} ₽", sub_end.strftime("%d.%m.%Y") if sub_end else "—", get_user_source(user_id)
-        ])
-        sheets_sync_user(user_id, first_name, "")
+        plan_name = {
+            "aura_start": "Старт",
+            "aura_pro": "Про",
+            "aura_pro_year": "Про на год",
+        }.get(plan, str(plan))
+        payment_entry = (
+            f"{datetime.now().strftime('%d.%m.%Y')}: "
+            f"{plan_name} — {amount} ₽"
+        )
+        _upsert_compact_row(
+            user_id,
+            visit_date=datetime.now().strftime("%d.%m.%Y %H:%M"),
+            payment_entry=payment_entry,
+        )
     except Exception as e:
-        logging.error(f"Google Sheets sale log: {e}")
+        logging.error("Google Sheets sale log: %s", e)
+
+
+def sheets_rebuild_from_db():
+    """Создать таблицу сразу после запуска и восстановить данные из SQLite."""
+    try:
+        ws = _get_data_sheet()
+
+        with sqlite3.connect(DB, timeout=20) as conn:
+            users = conn.execute(
+                "SELECT user_id, registered_at FROM users ORDER BY user_id"
+            ).fetchall()
+            events = conn.execute(
+                "SELECT user_id, MAX(created_at) FROM analytics_events GROUP BY user_id"
+            ).fetchall()
+            payments = conn.execute(
+                "SELECT user_id, plan, processed_at FROM payment_history "
+                "WHERE status='succeeded' ORDER BY processed_at"
+            ).fetchall()
+            reviews = conn.execute(
+                "SELECT user_id, review, created_at FROM reviews ORDER BY created_at"
+            ).fetchall()
+
+        last_dates = {str(uid): created for uid, created in events if uid}
+        rows = {}
+        for uid, registered_at in users:
+            uid_key = str(uid)
+            raw_date = last_dates.get(uid_key) or registered_at or ""
+            try:
+                formatted_date = datetime.fromisoformat(raw_date).strftime("%d.%m.%Y %H:%M")
+            except Exception:
+                formatted_date = raw_date[:16] if raw_date else "—"
+            rows[uid_key] = [formatted_date, uid_key, "", ""]
+
+        prices = {
+            "aura_start": 190,
+            "aura_pro": 390,
+            "aura_pro_year": 2990,
+            "once_money_code": 199,
+            "once_matrix": 249,
+            "once_forecast": 299,
+            "once_natal": 349,
+        }
+        labels = {
+            "aura_start": "Старт",
+            "aura_pro": "Про",
+            "aura_pro_year": "Про на год",
+            "once_money_code": "Денежный код",
+            "once_matrix": "Матрица судьбы",
+            "once_forecast": "Прогноз на год",
+            "once_natal": "Натальная карта",
+        }
+
+        for uid, plan, processed_at in payments:
+            key = str(uid)
+            rows.setdefault(key, ["—", key, "", ""])
+            try:
+                day = datetime.fromisoformat(processed_at).strftime("%d.%m.%Y")
+            except Exception:
+                day = str(processed_at or "")[:10]
+            entry = f"{day}: {labels.get(plan, plan)} — {prices.get(plan, 0)} ₽"
+            rows[key][2] = _append_history(rows[key][2], entry)
+
+        for uid, review, created_at in reviews:
+            key = str(uid)
+            rows.setdefault(key, ["—", key, "", ""])
+            try:
+                day = datetime.fromisoformat(created_at).strftime("%d.%m.%Y")
+            except Exception:
+                day = str(created_at or "")[:10]
+            entry = f"{day}: {str(review or '').strip()[:700]}"
+            rows[key][3] = _append_history(rows[key][3], entry)
+
+        payload = [SHEET_HEADERS] + list(rows.values())
+        with _SHEETS_LOCK:
+            ws.clear()
+            ws.update(f"A1:D{max(1, len(payload))}", payload)
+            try:
+                ws.freeze(rows=1)
+            except Exception:
+                pass
+
+        logging.info(
+            "Google Sheets восстановлена: %s, строк пользователей: %s",
+            SPREADSHEET_NAME,
+            len(rows),
+        )
+    except Exception as e:
+        logging.error("Google Sheets rebuild: %s", e)
+
 
 
 # ========== ЛОГИ ==========
@@ -2487,6 +2648,7 @@ app = FastAPI()
 @app.on_event("startup")
 async def startup():
     init_db()
+    asyncio.create_task(asyncio.to_thread(sheets_rebuild_from_db))
     headers = {"Authorization": MAX_TOKEN, "Content-Type": "application/json"}
     try:
         async with httpx.AsyncClient(timeout=10) as client:
